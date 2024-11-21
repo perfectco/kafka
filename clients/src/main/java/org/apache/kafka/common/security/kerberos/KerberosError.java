@@ -16,6 +16,7 @@
  */
 package org.apache.kafka.common.security.kerberos;
 
+import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.security.authenticator.SaslClientAuthenticator;
 import org.apache.kafka.common.utils.Java;
 
@@ -52,39 +53,39 @@ public enum KerberosError {
     private static final int GSS_EXCEPTION_NO_CRED;
 
     static {
-        Class<?> krbExceptionClass = null;
-        Method krbExceptionReturnCodeMethod = null;
         try {
             // different IBM JDKs versions include different security implementations
             if (Java.isIbmJdk() && canLoad("com.ibm.security.krb5.KrbException")) {
-                krbExceptionClass = Class.forName("com.ibm.security.krb5.KrbException");
+                KRB_EXCEPTION_CLASS = Class.forName("com.ibm.security.krb5.KrbException");
             } else if (Java.isIbmJdk() && canLoad("com.ibm.security.krb5.internal.KrbException")) {
-                krbExceptionClass = Class.forName("com.ibm.security.krb5.internal.KrbException");
+                KRB_EXCEPTION_CLASS = Class.forName("com.ibm.security.krb5.internal.KrbException");
+            } else if (Java.isAndroid()) {
+                KRB_EXCEPTION_CLASS = null;
             } else {
-                krbExceptionClass = Class.forName("sun.security.krb5.KrbException");
+                KRB_EXCEPTION_CLASS = Class.forName("sun.security.krb5.KrbException");
             }
-            krbExceptionReturnCodeMethod = krbExceptionClass.getMethod("returnCode");
+            if (KRB_EXCEPTION_CLASS != null) {
+                KRB_EXCEPTION_RETURN_CODE_METHOD = KRB_EXCEPTION_CLASS.getMethod("returnCode");
+            } else {
+                KRB_EXCEPTION_RETURN_CODE_METHOD = null;
+            }
         } catch (Exception e) {
-            log.trace("Kerberos exceptions could not be initialized", e);
-            krbExceptionClass = null;
-            krbExceptionReturnCodeMethod = null;
+            throw new KafkaException("Kerberos exceptions could not be initialized", e);
         }
-        KRB_EXCEPTION_CLASS = krbExceptionClass;
-        KRB_EXCEPTION_RETURN_CODE_METHOD = krbExceptionReturnCodeMethod;
 
-        Class<?> gssExceptionClass = null;
-        Method gssExceptionGetMajorMethod = null;
-        int gssExceptionNoCred = -1;
         try {
-            gssExceptionClass = Class.forName("org.ietf.jgss.GSSException");
-            gssExceptionGetMajorMethod = gssExceptionClass.getMethod("getMajor");
-            gssExceptionNoCred = gssExceptionClass.getField("NO_CRED").getInt(null);
+            if (Java.isAndroid()) {
+                GSS_EXCEPTION_CLASS = null;
+                GSS_EXCEPTION_GET_MAJOR_METHOD = null;
+                GSS_EXCEPTION_NO_CRED = -1;
+            } else {
+                GSS_EXCEPTION_CLASS = Class.forName("org.ietf.jgss.GSSException");
+                GSS_EXCEPTION_GET_MAJOR_METHOD = GSS_EXCEPTION_CLASS.getMethod("getMajor");
+                GSS_EXCEPTION_NO_CRED = GSS_EXCEPTION_CLASS.getField("NO_CRED").getInt(null);
+            }
         } catch (Exception e) {
-            log.trace("GSS-API exceptions could not be initialized", e);
+            throw new KafkaException("GSS-API exceptions could not be initialized", e);
         }
-        GSS_EXCEPTION_CLASS = gssExceptionClass;
-        GSS_EXCEPTION_GET_MAJOR_METHOD = gssExceptionGetMajorMethod;
-        GSS_EXCEPTION_NO_CRED = gssExceptionNoCred;
     }
 
     private static boolean canLoad(String clazz) {
@@ -117,7 +118,7 @@ public enum KerberosError {
     }
 
     public static KerberosError fromException(Exception exception) {
-        if (KRB_EXCEPTION_CLASS == null || KRB_EXCEPTION_RETURN_CODE_METHOD == null)
+        if (KRB_EXCEPTION_CLASS == null)
             return null;
         Throwable cause = findCause(exception, KRB_EXCEPTION_CLASS);
         if (cause == null)
@@ -148,7 +149,7 @@ public enum KerberosError {
      * before the subsequent login.
      */
     public static boolean isRetriableClientGssException(Exception exception) {
-        if (GSS_EXCEPTION_CLASS == null || GSS_EXCEPTION_GET_MAJOR_METHOD == null)
+        if (GSS_EXCEPTION_CLASS == null)
             return false;
         Throwable cause = findCause(exception, GSS_EXCEPTION_CLASS);
         if (cause != null) {
@@ -156,7 +157,7 @@ public enum KerberosError {
                 Integer major = (Integer) GSS_EXCEPTION_GET_MAJOR_METHOD.invoke(cause);
                 return major == GSS_EXCEPTION_NO_CRED;
             } catch (Exception e) {
-                log.trace("GSS major code could not be determined from {}", exception, e);
+                log.trace("GSS-API major code could not be determined from {}", exception, e);
             }
         }
         return false;
