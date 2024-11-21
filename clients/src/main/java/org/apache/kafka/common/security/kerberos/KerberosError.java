@@ -51,19 +51,25 @@ public enum KerberosError {
     private static final Method KRB_EXCEPTION_RETURN_CODE_METHOD;
 
     static {
+        Class<?> krbExceptionClass = null;
+        Method krbExceptionReturnCodeMethod = null;
         try {
             // different IBM JDKs versions include different security implementations
             if (Java.isIbmJdk() && canLoad("com.ibm.security.krb5.KrbException")) {
-                KRB_EXCEPTION_CLASS = Class.forName("com.ibm.security.krb5.KrbException");
+                krbExceptionClass = Class.forName("com.ibm.security.krb5.KrbException");
             } else if (Java.isIbmJdk() && canLoad("com.ibm.security.krb5.internal.KrbException")) {
-                KRB_EXCEPTION_CLASS = Class.forName("com.ibm.security.krb5.internal.KrbException");
+                krbExceptionClass = Class.forName("com.ibm.security.krb5.internal.KrbException");
             } else {
-                KRB_EXCEPTION_CLASS = Class.forName("sun.security.krb5.KrbException");
+                krbExceptionClass = Class.forName("sun.security.krb5.KrbException");
             }
-            KRB_EXCEPTION_RETURN_CODE_METHOD = KRB_EXCEPTION_CLASS.getMethod("returnCode");
+            krbExceptionReturnCodeMethod = krbExceptionClass.getMethod("returnCode");
         } catch (Exception e) {
-            throw new KafkaException("Kerberos exceptions could not be initialized", e);
+            log.trace("Kerberos exceptions could not be initialized", e);
+            krbExceptionClass = null;
+            krbExceptionReturnCodeMethod = null;
         }
+        KRB_EXCEPTION_CLASS = krbExceptionClass;
+        KRB_EXCEPTION_RETURN_CODE_METHOD = krbExceptionReturnCodeMethod;
     }
 
     private static boolean canLoad(String clazz) {
@@ -88,6 +94,8 @@ public enum KerberosError {
     }
 
     public static KerberosError fromException(Exception exception) {
+        if (KRB_EXCEPTION_CLASS == null || KRB_EXCEPTION_RETURN_CODE_METHOD == null)
+            return null;
         Throwable cause = exception.getCause();
         while (cause != null && !KRB_EXCEPTION_CLASS.isInstance(cause)) {
             cause = cause.getCause();
