@@ -108,13 +108,18 @@ public enum KerberosError {
         return retriable;
     }
 
+    private static Throwable findCause(Exception exception, Class<?> clazz) {
+        Throwable cause = exception.getCause();
+        while (cause != null && !clazz.isInstance(cause)) {
+            cause = cause.getCause();
+        }
+        return cause;
+    }
+
     public static KerberosError fromException(Exception exception) {
         if (KRB_EXCEPTION_CLASS == null || KRB_EXCEPTION_RETURN_CODE_METHOD == null)
             return null;
-        Throwable cause = exception.getCause();
-        while (cause != null && !KRB_EXCEPTION_CLASS.isInstance(cause)) {
-            cause = cause.getCause();
-        }
+        Throwable cause = findCause(exception, KRB_EXCEPTION_CLASS);
         if (cause == null)
             return null;
         else {
@@ -145,10 +150,7 @@ public enum KerberosError {
     public static boolean isRetriableClientGssException(Exception exception) {
         if (GSS_EXCEPTION_CLASS == null || GSS_EXCEPTION_GET_MAJOR_METHOD == null)
             return false;
-        Throwable cause = exception.getCause();
-        while (cause != null && !GSS_EXCEPTION_CLASS.isInstance(cause)) {
-            cause = cause.getCause();
-        }
+        Throwable cause = findCause(exception, GSS_EXCEPTION_CLASS);
         if (cause != null) {
             try {
                 Integer major = (Integer) GSS_EXCEPTION_GET_MAJOR_METHOD.invoke(cause);
