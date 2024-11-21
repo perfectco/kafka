@@ -62,7 +62,7 @@ import org.ietf.jgss.Oid;
 import org.slf4j.Logger;
 
 import java.io.IOException;
-import java.net.Socket;
+import java.net.InetSocketAddress;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.SocketChannel;
 import java.util.Collections;
@@ -220,7 +220,6 @@ public class SaslChannelBuilder implements ChannelBuilder, ListenerReconfigurabl
         TransportLayer transportLayer = null;
         try {
             SocketChannel socketChannel = (SocketChannel) key.channel();
-            Socket socket = socketChannel.socket();
             transportLayer = buildTransportLayer(id, key, socketChannel, metadataRegistry);
             final TransportLayer finalTransportLayer = transportLayer;
             Supplier<Authenticator> authenticatorCreator;
@@ -234,10 +233,11 @@ public class SaslChannelBuilder implements ChannelBuilder, ListenerReconfigurabl
                         metadataRegistry);
             } else {
                 LoginManager loginManager = loginManagers.get(clientSaslMechanism);
+                InetSocketAddress remoteAddress = (InetSocketAddress) socketChannel.getRemoteAddress();
                 authenticatorCreator = () -> buildClientAuthenticator(configs,
                         saslCallbackHandlers.get(clientSaslMechanism),
                         id,
-                        socket.getInetAddress().getHostName(),
+                        remoteAddress.getHostName(),
                         loginManager.serviceName(),
                         finalTransportLayer,
                         subjects.get(clientSaslMechanism));
