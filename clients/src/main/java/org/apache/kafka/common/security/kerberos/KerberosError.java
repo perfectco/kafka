@@ -16,11 +16,9 @@
  */
 package org.apache.kafka.common.security.kerberos;
 
-import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.security.authenticator.SaslClientAuthenticator;
 import org.apache.kafka.common.utils.Java;
 
-import org.ietf.jgss.GSSException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,6 +47,9 @@ public enum KerberosError {
     private static final Logger log = LoggerFactory.getLogger(SaslClientAuthenticator.class);
     private static final Class<?> KRB_EXCEPTION_CLASS;
     private static final Method KRB_EXCEPTION_RETURN_CODE_METHOD;
+    private static final Class<?> GSS_EXCEPTION_CLASS;
+    private static final Method GSS_EXCEPTION_GET_MAJOR_METHOD;
+    private static final int GSS_EXCEPTION_NO_CRED;
 
     static {
         Class<?> krbExceptionClass = null;
@@ -70,6 +71,20 @@ public enum KerberosError {
         }
         KRB_EXCEPTION_CLASS = krbExceptionClass;
         KRB_EXCEPTION_RETURN_CODE_METHOD = krbExceptionReturnCodeMethod;
+
+        Class<?> gssExceptionClass = null;
+        Method gssExceptionGetMajorMethod = null;
+        int gssExceptionNoCred = -1;
+        try {
+            gssExceptionClass = Class.forName("org.ietf.jgss.GSSException");
+            gssExceptionGetMajorMethod = gssExceptionClass.getMethod("getMajor");
+            gssExceptionNoCred = gssExceptionClass.getField("NO_CRED").getInt(null);
+        } catch (Exception e) {
+            log.trace("GSS-API exceptions could not be initialized", e);
+        }
+        GSS_EXCEPTION_CLASS = gssExceptionClass;
+        GSS_EXCEPTION_GET_MAJOR_METHOD = gssExceptionGetMajorMethod;
+        GSS_EXCEPTION_NO_CRED = gssExceptionNoCred;
     }
 
     private static boolean canLoad(String clazz) {
@@ -128,13 +143,19 @@ public enum KerberosError {
      * before the subsequent login.
      */
     public static boolean isRetriableClientGssException(Exception exception) {
+        if (GSS_EXCEPTION_CLASS == null || GSS_EXCEPTION_GET_MAJOR_METHOD == null)
+            return false;
         Throwable cause = exception.getCause();
-        while (cause != null && !(cause instanceof GSSException)) {
+        while (cause != null && !GSS_EXCEPTION_CLASS.isInstance(cause)) {
             cause = cause.getCause();
         }
         if (cause != null) {
-            GSSException gssException = (GSSException) cause;
-            return gssException.getMajor() == GSSException.NO_CRED;
+            try {
+                Integer major = (Integer) GSS_EXCEPTION_GET_MAJOR_METHOD.invoke(cause);
+                return major == GSS_EXCEPTION_NO_CRED;
+            } catch (Exception e) {
+                log.trace("GSS major code could not be determined from {}", exception, e);
+            }
         }
         return false;
     }
