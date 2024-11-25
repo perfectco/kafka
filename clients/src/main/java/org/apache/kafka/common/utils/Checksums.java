@@ -35,12 +35,12 @@ public final class Checksums {
     private static final MethodHandle BYTE_BUFFER_UPDATE;
 
     static {
-        MethodHandle byteBufferUpdate = null;
+        MethodHandle byteBufferUpdate;
         try {
             byteBufferUpdate = MethodHandles.publicLookup().findVirtual(Checksum.class, "update",
                     MethodType.methodType(void.class, ByteBuffer.class));
-        } catch (Throwable t) {
-            handleUpdateThrowable(t);
+        } catch (ReflectiveOperationException e) {
+            byteBufferUpdate = null;
         }
         BYTE_BUFFER_UPDATE = byteBufferUpdate;
     }
