@@ -27,8 +27,4 @@ public final class Java {
     public static boolean isIbmJdkSemeru() {
         return isIbmJdk() && System.getProperty("java.runtime.name", "").contains("Semeru");
     }
-
-    public static boolean isAndroid() {
-        return System.getProperty("java.vendor").contains("Android");
-    }
 }
