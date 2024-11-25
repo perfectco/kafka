@@ -26,7 +26,7 @@ import java.util.zip.Checksum;
 /**
  * A class that can be used to compute the CRC32C (Castagnoli) of a ByteBuffer or array of bytes.
  *
- * We use java.util.zip.CRC32C (introduced in Java 9).
+ * We use java.util.zip.CRC32C (introduced in Java 9) if it is available and fallback to PureJavaCrc32C, otherwise.
  * java.util.zip.CRC32C is significantly faster on reasonably modern CPUs as it uses the CRC32 instruction introduced
  * in SSE4.2.
  *
@@ -37,8 +37,13 @@ public final class Crc32C {
     private static final MethodHandle CRC32C_CONSTRUCTOR;
 
     static {
+        Class<?> cls;
         try {
-            Class<?> cls = Class.forName("java.util.zip.CRC32C");
+            cls = Class.forName("java.util.zip.CRC32C");
+        } catch (ReflectiveOperationException e) {
+            cls = PureJavaCrc32C.class;
+        }
+        try {
             CRC32C_CONSTRUCTOR = MethodHandles.publicLookup().findConstructor(cls, MethodType.methodType(void.class));
         } catch (ReflectiveOperationException e) {
             // Should never happen
