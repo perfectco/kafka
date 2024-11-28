@@ -28,6 +28,7 @@ import java.io.InputStream;
 import java.lang.reflect.Method;
 import java.util.Properties;
 
+import javax.management.JMException;
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
 
@@ -81,7 +82,7 @@ public class AppInfoParser {
             server.registerMBean(mBean, name);
 
             registerMetrics(metrics, mBean); // prefix will be added later by JmxReporter
-        } catch (Throwable e) {
+        } catch (JMException | ReflectiveOperationException e) {
             log.warn("Error registering AppInfo mbean", e);
         }
     }
@@ -96,7 +97,7 @@ public class AppInfoParser {
                 server.unregisterMBean(name);
 
             unregisterMetrics(metrics);
-        } catch (Throwable e) {
+        } catch (JMException | ReflectiveOperationException e) {
             log.warn("Error unregistering AppInfo mbean", e);
         } finally {
             log.info("App info {} for {} unregistered", prefix, id);
