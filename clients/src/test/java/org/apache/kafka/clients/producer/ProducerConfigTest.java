@@ -17,6 +17,8 @@
 package org.apache.kafka.clients.producer;
 
 import org.apache.kafka.clients.CommonClientConfigs;
+import org.apache.kafka.clients.DefaultHostResolver;
+import org.apache.kafka.clients.HostResolver;
 import org.apache.kafka.clients.MetadataRecoveryStrategy;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.security.auth.SecurityProtocol;
@@ -26,6 +28,8 @@ import org.apache.kafka.common.serialization.StringSerializer;
 
 import org.junit.jupiter.api.Test;
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -144,5 +148,26 @@ public class ProducerConfigTest {
 
         configs.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, "5");
         assertDoesNotThrow(() -> new ProducerConfig(configs));
+    }
+
+    @Test
+    public void testHostResolver() {
+        final Map<String, Object> configs = new HashMap<>();
+        configs.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, keySerializerClass);
+        configs.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, valueSerializerClass);
+        ProducerConfig config = new ProducerConfig(configs);
+        HostResolver resolver = config.getConfiguredInstance(CommonClientConfigs.HOSTNAME_RESOLVER, HostResolver.class);
+        assertTrue(resolver instanceof DefaultHostResolver);
+
+        configs.put(CommonClientConfigs.HOSTNAME_RESOLVER, MyHostResolver.class.getName());
+        config = new ProducerConfig(configs);
+        resolver = config.getConfiguredInstance(CommonClientConfigs.HOSTNAME_RESOLVER, HostResolver.class);
+        assertTrue(resolver instanceof MyHostResolver);
+    }
+
+    public static class MyHostResolver implements HostResolver {
+        public InetAddress[] resolve(String host) throws UnknownHostException {
+            throw new UnknownHostException();
+        }
     }
 }
