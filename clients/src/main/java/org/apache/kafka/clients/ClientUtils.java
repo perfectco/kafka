@@ -171,7 +171,7 @@ public final class ClientUtils {
                 config.getInt(CommonClientConfigs.REQUEST_TIMEOUT_MS_CONFIG),
                 metadata,
                 null,
-                new DefaultHostResolver(),
+                config.getConfiguredInstance(CommonClientConfigs.HOSTNAME_RESOLVER, HostResolver.class),
                 throttleTimeSensor,
                 clientTelemetrySender);
     }

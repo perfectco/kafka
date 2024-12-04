@@ -17,6 +17,8 @@
 package org.apache.kafka.clients.consumer;
 
 import org.apache.kafka.clients.CommonClientConfigs;
+import org.apache.kafka.clients.DefaultHostResolver;
+import org.apache.kafka.clients.HostResolver;
 import org.apache.kafka.clients.MetadataRecoveryStrategy;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.errors.InvalidConfigurationException;
@@ -30,6 +32,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Locale;
@@ -235,6 +239,27 @@ public class ConsumerConfigTest {
             assertEquals(protocol, config.getString(ConsumerConfig.GROUP_PROTOCOL_CONFIG));
         } else {
             assertThrows(ConfigException.class, () -> new ConsumerConfig(configs));
+        }
+    }
+
+    @Test
+    public void testHostResolver() {
+        final Map<String, Object> configs = new HashMap<>();
+        configs.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, keyDeserializerClass);
+        configs.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, valueDeserializerClass);
+        ConsumerConfig config = new ConsumerConfig(configs);
+        HostResolver resolver = config.getConfiguredInstance(CommonClientConfigs.HOSTNAME_RESOLVER, HostResolver.class);
+        assertTrue(resolver instanceof DefaultHostResolver);
+
+        configs.put(CommonClientConfigs.HOSTNAME_RESOLVER, MyHostResolver.class.getName());
+        config = new ConsumerConfig(configs);
+        resolver = config.getConfiguredInstance(CommonClientConfigs.HOSTNAME_RESOLVER, HostResolver.class);
+        assertTrue(resolver instanceof MyHostResolver);
+    }
+
+    public static class MyHostResolver implements HostResolver {
+        public InetAddress[] resolve(String host) throws UnknownHostException {
+            throw new UnknownHostException();
         }
     }
 }

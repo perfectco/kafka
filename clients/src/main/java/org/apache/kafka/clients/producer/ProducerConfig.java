@@ -18,6 +18,7 @@ package org.apache.kafka.clients.producer;
 
 import org.apache.kafka.clients.ClientDnsLookup;
 import org.apache.kafka.clients.CommonClientConfigs;
+import org.apache.kafka.clients.DefaultHostResolver;
 import org.apache.kafka.clients.MetadataRecoveryStrategy;
 import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.common.config.ConfigDef;
@@ -533,7 +534,13 @@ public class ProducerConfig extends AbstractConfig {
                                         CommonClientConfigs.DEFAULT_METADATA_RECOVERY_REBOOTSTRAP_TRIGGER_MS,
                                         atLeast(0),
                                         Importance.LOW,
-                                        CommonClientConfigs.METADATA_RECOVERY_REBOOTSTRAP_TRIGGER_MS_DOC);
+                                        CommonClientConfigs.METADATA_RECOVERY_REBOOTSTRAP_TRIGGER_MS_DOC)
+                                .define(CommonClientConfigs.HOSTNAME_RESOLVER,
+                                        Type.CLASS,
+                                        DefaultHostResolver.class.getName(),
+                                        new ConfigDef.NonNullValidator(),
+                                        Importance.LOW,
+                                        CommonClientConfigs.HOSTNAME_RESOLVER_DOC);
     }
 
     @Override

@@ -240,6 +240,11 @@ public class CommonClientConfigs {
             "metadata for this interval, client repeats the bootstrap process using <code>bootstrap.servers</code> configuration.";
     public static final long DEFAULT_METADATA_RECOVERY_REBOOTSTRAP_TRIGGER_MS = 300 * 1000;
 
+    public static final String HOSTNAME_RESOLVER = "hostname.resolver";
+    public static final String HOSTNAME_RESOLVER_DOC = "A class to use to resolve advertised hostnames when connecting to a broker. " +
+            "Such class must implement the <code>org.apache.kafka.clients.HostResolver</code> interface. " +
+            "The default implementation uses the default system facilities for name lookup, e.g. DNS.";
+
     /**
      * Postprocess the configuration so that exponential backoff is disabled when reconnect backoff
      * is explicitly configured but the maximum reconnect backoff is not explicitly configured.
