@@ -16,7 +16,6 @@
  */
 package org.apache.kafka.common.utils;
 
-import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.nio.ByteBuffer;
@@ -32,17 +31,19 @@ import java.util.zip.Checksum;
  * NOTE: This class is intended for INTERNAL usage only within Kafka.
  */
 public final class Checksums {
-    private static final MethodHandle BYTE_BUFFER_UPDATE;
+    private static final boolean HAS_UPDATE_BYTE_BUFFER;
 
     static {
-        MethodHandle byteBufferUpdate;
+        boolean hasUpdateByteBuffer;
         try {
-            byteBufferUpdate = MethodHandles.publicLookup().findVirtual(Checksum.class, "update",
+            // although Android can run bytecode > JDK 8, some of its APIs are stuck there.
+            MethodHandles.publicLookup().findVirtual(Checksum.class, "update",
                     MethodType.methodType(void.class, ByteBuffer.class));
+            hasUpdateByteBuffer = true;
         } catch (ReflectiveOperationException e) {
-            byteBufferUpdate = null;
+            hasUpdateByteBuffer = false;
         }
-        BYTE_BUFFER_UPDATE = byteBufferUpdate;
+        HAS_UPDATE_BYTE_BUFFER = hasUpdateByteBuffer;
     }
 
     private Checksums() {
@@ -63,7 +64,7 @@ public final class Checksums {
     public static void update(Checksum checksum, ByteBuffer buffer, int offset, int length) {
         if (buffer.hasArray()) {
             checksum.update(buffer.array(), buffer.position() + buffer.arrayOffset() + offset, length);
-        } else if (BYTE_BUFFER_UPDATE != null && buffer.isDirect()) {
+        } else if (HAS_UPDATE_BYTE_BUFFER && buffer.isDirect()) {
             final int oldPosition = buffer.position();
             final int oldLimit = buffer.limit();
             try {
@@ -71,7 +72,7 @@ public final class Checksums {
                 final int start = oldPosition + offset;
                 buffer.limit(start + length);
                 buffer.position(start);
-                BYTE_BUFFER_UPDATE.invokeExact(checksum, buffer);
+                checksum.update(buffer);
             } catch (Throwable t) {
                 handleUpdateThrowable(t);
             } finally {
