@@ -23,9 +23,10 @@ import org.apache.kafka.clients.consumer.{Consumer, ConsumerConfig}
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord}
 import org.apache.kafka.common.{KafkaException, TopicPartition}
 import org.apache.kafka.common.errors.SaslAuthenticationException
-import org.junit.jupiter.api.{AfterEach, BeforeEach, TestInfo}
+import org.junit.jupiter.api.{AfterEach, BeforeEach, Test, TestInfo}
 import org.junit.jupiter.api.Assertions._
 import kafka.utils.{TestInfoUtils, TestUtils}
+import org.apache.kafka.common.config.SaslConfigs
 import org.apache.kafka.common.security.auth.SecurityProtocol
 import org.apache.kafka.coordinator.group.GroupCoordinatorConfig
 import org.apache.kafka.coordinator.transaction.TransactionLogConfig
@@ -72,10 +73,12 @@ class SaslClientsWithInvalidCredentialsTest extends AbstractSaslTest {
 
   @BeforeEach
   override def setUp(testInfo: TestInfo): Unit = {
-    startSasl(jaasSections(kafkaServerSaslMechanisms, Some(kafkaClientSaslMechanism), Both,
+    startSasl(jaasSections(kafkaServerSaslMechanisms, Some(kafkaClientSaslMechanism),
       JaasTestUtils.KAFKA_SERVER_CONTEXT_NAME))
+    val superuserLoginContext = jaasAdminLoginModule(kafkaClientSaslMechanism)
+    superuserClientConfig.put(SaslConfigs.SASL_JAAS_CONFIG, superuserLoginContext)
     super.setUp(testInfo)
-    Using(createPrivilegedAdminClient()) { superuserAdminClient =>
+    Using.resource(createPrivilegedAdminClient()) { superuserAdminClient =>
       TestUtils.createTopicWithAdmin(
         superuserAdminClient, topic, brokers, controllerServers, numPartitions
       )
@@ -88,7 +91,7 @@ class SaslClientsWithInvalidCredentialsTest extends AbstractSaslTest {
     closeSasl()
   }
 
-  @ParameterizedTest(name="{displayName}.quorum=kraft.isIdempotenceEnabled={0}")
+  @ParameterizedTest(name="{displayName}.isIdempotenceEnabled={0}")
   @ValueSource(booleans = Array(true, false))
   def testProducerWithAuthenticationFailure(isIdempotenceEnabled: Boolean): Unit = {
     val prop = new Properties()
@@ -105,12 +108,11 @@ class SaslClientsWithInvalidCredentialsTest extends AbstractSaslTest {
       createProducer(configOverrides = prop)
     else
       producer
-    verifyWithRetry(sendOneRecord(producer2))
+    verifyWithRetry(sendOneRecord(producer2))()
   }
 
-  @ParameterizedTest(name = TestInfoUtils.TestWithParameterizedQuorumAndGroupProtocolNames)
-  @MethodSource(Array("getTestQuorumAndGroupProtocolParametersClassicGroupProtocolOnly"))
-  def testTransactionalProducerWithAuthenticationFailure(quorum: String, groupProtocol: String): Unit = {
+  @Test
+  def testTransactionalProducerWithAuthenticationFailure(): Unit = {
     val txProducer = createTransactionalProducer()
     verifyAuthenticationException(txProducer.initTransactions())
 
@@ -118,25 +120,25 @@ class SaslClientsWithInvalidCredentialsTest extends AbstractSaslTest {
     assertThrows(classOf[KafkaException], () => txProducer.initTransactions())
   }
 
-  @ParameterizedTest(name = TestInfoUtils.TestWithParameterizedQuorumAndGroupProtocolNames)
-  @MethodSource(Array("getTestQuorumAndGroupProtocolParametersClassicGroupProtocolOnly"))
-  def testConsumerWithAuthenticationFailure(quorum: String, groupProtocol: String): Unit = {
+  @ParameterizedTest(name = TestInfoUtils.TestWithParameterizedGroupProtocolNames)
+  @MethodSource(Array("getTestGroupProtocolParametersAll"))
+  def testConsumerWithAuthenticationFailure(groupProtocol: String): Unit = {
     val consumer = createConsumer()
     consumer.subscribe(List(topic).asJava)
     verifyConsumerWithAuthenticationFailure(consumer)
   }
 
-  @ParameterizedTest(name = TestInfoUtils.TestWithParameterizedQuorumAndGroupProtocolNames)
-  @MethodSource(Array("getTestQuorumAndGroupProtocolParametersClassicGroupProtocolOnly"))
-  def testManualAssignmentConsumerWithAuthenticationFailure(quorum: String, groupProtocol: String): Unit = {
+  @ParameterizedTest(name = TestInfoUtils.TestWithParameterizedGroupProtocolNames)
+  @MethodSource(Array("getTestGroupProtocolParametersAll"))
+  def testManualAssignmentConsumerWithAuthenticationFailure(groupProtocol: String): Unit = {
     val consumer = createConsumer()
     consumer.assign(List(tp).asJava)
     verifyConsumerWithAuthenticationFailure(consumer)
   }
 
-  @ParameterizedTest(name = TestInfoUtils.TestWithParameterizedQuorumAndGroupProtocolNames)
-  @MethodSource(Array("getTestQuorumAndGroupProtocolParametersClassicGroupProtocolOnly"))
-  def testManualAssignmentConsumerWithAutoCommitDisabledWithAuthenticationFailure(quorum: String, groupProtocol: String): Unit = {
+  @ParameterizedTest(name = TestInfoUtils.TestWithParameterizedGroupProtocolNames)
+  @MethodSource(Array("getTestGroupProtocolParametersAll"))
+  def testManualAssignmentConsumerWithAutoCommitDisabledWithAuthenticationFailure(groupProtocol: String): Unit = {
     this.consumerConfig.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false.toString)
     val consumer = createConsumer()
     consumer.assign(List(tp).asJava)
@@ -150,13 +152,12 @@ class SaslClientsWithInvalidCredentialsTest extends AbstractSaslTest {
 
     createClientCredential()
     val producer = createProducer()
-    verifyWithRetry(sendOneRecord(producer))
-    verifyWithRetry(assertEquals(1, consumer.poll(Duration.ofMillis(1000)).count))
+    verifyWithRetry(sendOneRecord(producer))()
+    verifyWithRetry(consumer.poll(Duration.ofMillis(1000)))(_.count == 1)
   }
 
-  @ParameterizedTest(name = TestInfoUtils.TestWithParameterizedQuorumAndGroupProtocolNames)
-  @MethodSource(Array("getTestQuorumAndGroupProtocolParametersClassicGroupProtocolOnly"))
-  def testKafkaAdminClientWithAuthenticationFailure(quorum: String, groupProtocol: String): Unit = {
+  @Test
+  def testKafkaAdminClientWithAuthenticationFailure(): Unit = {
     val props = JaasTestUtils.adminClientSecurityConfigs(securityProtocol, OptionConverters.toJava(trustStoreFile), OptionConverters.toJava(clientSaslProperties))
     props.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers())
     val adminClient = Admin.create(props)
@@ -177,7 +178,7 @@ class SaslClientsWithInvalidCredentialsTest extends AbstractSaslTest {
       verifyAuthenticationException(describeTopic())
 
       createClientCredential()
-      verifyWithRetry(describeTopic())
+      verifyWithRetry(describeTopic())()
     } finally {
       adminClient.close()
     }
@@ -206,13 +207,12 @@ class SaslClientsWithInvalidCredentialsTest extends AbstractSaslTest {
     assertTrue(elapsedMs <= 5000, s"Poll took too long, elapsed=$elapsedMs")
   }
 
-  private def verifyWithRetry(action: => Unit): Unit = {
+  private def verifyWithRetry[T](operation: => T)(predicate: T => Boolean = (_: T) => true): Unit = {
     var attempts = 0
     TestUtils.waitUntilTrue(() => {
       try {
         attempts += 1
-        action
-        true
+        predicate(operation)
       } catch {
         case _: SaslAuthenticationException => false
       }

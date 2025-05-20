@@ -243,6 +243,25 @@ public class ConsumerConfigTest {
     }
 
     @Test
+    public void testUnsupportedConfigsWithConsumerGroupProtocol() {
+        testUnsupportedConfigsWithConsumerGroupProtocol(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, "RoundRobinAssignor");
+        testUnsupportedConfigsWithConsumerGroupProtocol(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, 1000);
+        testUnsupportedConfigsWithConsumerGroupProtocol(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, 30000);
+    }
+
+    private void testUnsupportedConfigsWithConsumerGroupProtocol(String configName, Object value) {
+        final Map<String, Object> configs = Map.of(
+                ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, keyDeserializerClass,
+                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, valueDeserializerClass,
+                ConsumerConfig.GROUP_PROTOCOL_CONFIG, GroupProtocol.CONSUMER.name(),
+                configName, value
+        );
+        ConfigException exception = assertThrows(ConfigException.class, () -> new ConsumerConfig(configs));
+        assertEquals(configName + " cannot be set when " + 
+                ConsumerConfig.GROUP_PROTOCOL_CONFIG + "=" + GroupProtocol.CONSUMER.name(), exception.getMessage());
+    }
+
+    @Test
     public void testHostResolver() {
         final Map<String, Object> configs = new HashMap<>();
         configs.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, keyDeserializerClass);

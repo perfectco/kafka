@@ -12,30 +12,30 @@
  */
 package kafka.api
 
-import kafka.log.UnifiedLog
-import org.apache.kafka.common.test.api.ClusterInstance
 import org.apache.kafka.common.test.api.{ClusterConfigProperty, ClusterTest, Type}
-import org.apache.kafka.common.test.api.ClusterTestExtensions
 import kafka.utils.TestUtils
 import org.apache.kafka.clients.admin.{Admin, ConsumerGroupDescription}
 import org.apache.kafka.clients.consumer.{Consumer, GroupProtocol, OffsetAndMetadata}
-import org.apache.kafka.common.{ConsumerGroupState, GroupType, KafkaFuture, TopicPartition}
+import org.apache.kafka.common.errors.{GroupIdNotFoundException, UnknownTopicOrPartitionException}
+import org.apache.kafka.common.{ConsumerGroupState, GroupType, KafkaFuture, TopicCollection, TopicPartition}
 import org.junit.jupiter.api.Assertions._
 
 import scala.jdk.CollectionConverters._
 import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.record.CompressionType
+import org.apache.kafka.common.test.ClusterInstance
 import org.apache.kafka.coordinator.group.GroupCoordinatorConfig
 import org.apache.kafka.server.config.ServerConfigs
+import org.apache.kafka.storage.internals.log.UnifiedLog
+import org.apache.kafka.test.{TestUtils => JTestUtils}
 import org.junit.jupiter.api.Timeout
-import org.junit.jupiter.api.extension.ExtendWith
 
 import java.time.Duration
 import java.util.Collections
 import java.util.concurrent.TimeUnit
+import scala.concurrent.ExecutionException
 
 @Timeout(120)
-@ExtendWith(value = Array(classOf[ClusterTestExtensions]))
 class GroupCoordinatorIntegrationTest(cluster: ClusterInstance) {
 
   @ClusterTest(
@@ -221,7 +221,7 @@ class GroupCoordinatorIntegrationTest(cluster: ClusterInstance) {
         .asScala
         .toMap
 
-      assertDescribedGroup(groups, "grp3", GroupType.CLASSIC, ConsumerGroupState.DEAD)
+      assertDescribedDeadGroup(groups, "grp3")
     }
   }
 
@@ -280,12 +280,64 @@ class GroupCoordinatorIntegrationTest(cluster: ClusterInstance) {
     }
   }
 
+  @ClusterTest(
+    types = Array(Type.KRAFT),
+    serverProperties = Array(
+      new ClusterConfigProperty(key = GroupCoordinatorConfig.OFFSETS_TOPIC_PARTITIONS_CONFIG, value = "1"),
+      new ClusterConfigProperty(key = GroupCoordinatorConfig.OFFSETS_TOPIC_REPLICATION_FACTOR_CONFIG, value = "1")
+    )
+  )
+  def testRecreatingConsumerOffsetsTopic(): Unit = {
+    withAdmin { admin =>
+      TestUtils.createTopicWithAdminRaw(
+        admin = admin,
+        topic = "foo",
+        numPartitions = 3
+      )
+
+      withConsumer(groupId = "group", groupProtocol = GroupProtocol.CONSUMER) { consumer =>
+        consumer.subscribe(List("foo").asJava)
+        TestUtils.waitUntilTrue(() => {
+          consumer.poll(Duration.ofMillis(50))
+          consumer.assignment().asScala.nonEmpty
+        }, msg = "Consumer did not get an non empty assignment")
+      }
+
+      admin
+        .deleteTopics(TopicCollection.ofTopicNames(List(Topic.GROUP_METADATA_TOPIC_NAME).asJava))
+        .all()
+        .get()
+
+      TestUtils.waitUntilTrue(() => {
+        try {
+          admin
+            .describeTopics(TopicCollection.ofTopicNames(List(Topic.GROUP_METADATA_TOPIC_NAME).asJava))
+            .topicNameValues()
+            .get(Topic.GROUP_METADATA_TOPIC_NAME)
+            .get(JTestUtils.DEFAULT_MAX_WAIT_MS, TimeUnit.MILLISECONDS)
+          false
+        } catch {
+          case e: ExecutionException =>
+            e.getCause.isInstanceOf[UnknownTopicOrPartitionException]
+        }
+      }, msg = s"${Topic.GROUP_METADATA_TOPIC_NAME} was not deleted")
+
+      withConsumer(groupId = "group", groupProtocol = GroupProtocol.CONSUMER) { consumer =>
+        consumer.subscribe(List("foo").asJava)
+        TestUtils.waitUntilTrue(() => {
+          consumer.poll(Duration.ofMillis(50))
+          consumer.assignment().asScala.nonEmpty
+        }, msg = "Consumer did not get an non empty assignment")
+      }
+    }
+  }
+
   private def rollAndCompactConsumerOffsets(): Unit = {
     val tp = new TopicPartition("__consumer_offsets", 0)
     val broker = cluster.brokers.asScala.head._2
     val log = broker.logManager.getLog(tp).get
     log.roll()
-    assertTrue(broker.logManager.cleaner.awaitCleaned(tp, 0))
+    assertTrue(broker.logManager.cleaner.awaitCleaned(tp, 0, 60000L))
   }
 
   private def withAdmin(f: Admin => Unit): Unit = {
@@ -327,5 +379,19 @@ class GroupCoordinatorIntegrationTest(cluster: ClusterInstance) {
     assertEquals(groupType, group.`type`)
     assertEquals(state, group.state)
     assertEquals(Collections.emptyList, group.members)
+  }
+
+  private def assertDescribedDeadGroup(
+    groups: Map[String, KafkaFuture[ConsumerGroupDescription]],
+    groupId: String
+  ): Unit = {
+    try {
+      groups(groupId).get(10, TimeUnit.SECONDS)
+      fail(s"Group $groupId should not be found")
+    } catch {
+      case e: java.util.concurrent.ExecutionException =>
+        assertTrue(e.getCause.isInstanceOf[GroupIdNotFoundException])
+        assertEquals(s"Group $groupId not found.", e.getCause.getMessage)
+    }
   }
 }

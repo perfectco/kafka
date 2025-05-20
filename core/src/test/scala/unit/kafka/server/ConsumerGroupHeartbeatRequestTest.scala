@@ -16,24 +16,23 @@
  */
 package kafka.server
 
-import org.apache.kafka.common.test.api.{ClusterConfigProperty, ClusterFeature, ClusterInstance, ClusterTest, ClusterTestDefaults, ClusterTestExtensions, Type}
+import org.apache.kafka.common.test.api.{ClusterConfigProperty, ClusterFeature, ClusterTest, ClusterTestDefaults, Type}
 import kafka.utils.TestUtils
 import org.apache.kafka.clients.admin.AlterConfigOp.OpType
 import org.apache.kafka.clients.admin.{AlterConfigOp, ConfigEntry}
-import org.apache.kafka.common.Uuid
+import org.apache.kafka.common.{TopicCollection, Uuid}
 import org.apache.kafka.common.config.ConfigResource
 import org.apache.kafka.common.message.{ConsumerGroupHeartbeatRequestData, ConsumerGroupHeartbeatResponseData}
 import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.requests.{ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse}
+import org.apache.kafka.common.test.ClusterInstance
 import org.apache.kafka.coordinator.group.{GroupConfig, GroupCoordinatorConfig}
-import org.apache.kafka.server.common.Features
+import org.apache.kafka.server.common.Feature
 import org.junit.jupiter.api.Assertions.{assertEquals, assertFalse, assertNotEquals, assertNotNull}
-import org.junit.jupiter.api.extension.ExtendWith
 
 import scala.collection.Map
 import scala.jdk.CollectionConverters._
 
-@ExtendWith(value = Array(classOf[ClusterTestExtensions]))
 @ClusterTestDefaults(
   types = Array(Type.KRAFT),
   serverProperties = Array(
@@ -41,7 +40,7 @@ import scala.jdk.CollectionConverters._
     new ClusterConfigProperty(key = GroupCoordinatorConfig.OFFSETS_TOPIC_REPLICATION_FACTOR_CONFIG, value = "1")
   )
 )
-class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
+class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) extends GroupCoordinatorBaseRequestTest(cluster) {
 
   @ClusterTest(
     serverProperties = Array(
@@ -50,27 +49,25 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
   )
   def testConsumerGroupHeartbeatIsInaccessibleWhenDisabledByStaticConfig(): Unit = {
     val consumerGroupHeartbeatRequest = new ConsumerGroupHeartbeatRequest.Builder(
-      new ConsumerGroupHeartbeatRequestData(),
-      true
+      new ConsumerGroupHeartbeatRequestData()
     ).build()
 
-    val consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+    val consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
     val expectedResponse = new ConsumerGroupHeartbeatResponseData().setErrorCode(Errors.UNSUPPORTED_VERSION.code)
     assertEquals(expectedResponse, consumerGroupHeartbeatResponse.data)
   }
 
   @ClusterTest(
     features = Array(
-      new ClusterFeature(feature = Features.GROUP_VERSION, version = 0)
+      new ClusterFeature(feature = Feature.GROUP_VERSION, version = 0)
     )
   )
   def testConsumerGroupHeartbeatIsInaccessibleWhenFeatureFlagNotEnabled(): Unit = {
     val consumerGroupHeartbeatRequest = new ConsumerGroupHeartbeatRequest.Builder(
-      new ConsumerGroupHeartbeatRequestData(),
-      true
+      new ConsumerGroupHeartbeatRequestData()
     ).build()
 
-    val consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+    val consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
     val expectedResponse = new ConsumerGroupHeartbeatResponseData().setErrorCode(Errors.UNSUPPORTED_VERSION.code)
     assertEquals(expectedResponse, consumerGroupHeartbeatResponse.data)
   }
@@ -97,15 +94,14 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
           .setMemberEpoch(0)
           .setRebalanceTimeoutMs(5 * 60 * 1000)
           .setSubscribedTopicNames(List("foo").asJava)
-          .setTopicPartitions(List.empty.asJava),
-        true
+          .setTopicPartitions(List.empty.asJava)
       ).build()
 
       // Send the request until receiving a successful response. There is a delay
       // here because the group coordinator is loaded in the background.
       var consumerGroupHeartbeatResponse: ConsumerGroupHeartbeatResponse = null
       TestUtils.waitUntilTrue(() => {
-        consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+        consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
         consumerGroupHeartbeatResponse.data.errorCode == Errors.NONE.code
       }, msg = s"Could not join the group successfully. Last response $consumerGroupHeartbeatResponse.")
 
@@ -126,8 +122,7 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
         new ConsumerGroupHeartbeatRequestData()
           .setGroupId("grp")
           .setMemberId(consumerGroupHeartbeatResponse.data.memberId)
-          .setMemberEpoch(consumerGroupHeartbeatResponse.data.memberEpoch),
-        true
+          .setMemberEpoch(consumerGroupHeartbeatResponse.data.memberEpoch)
       ).build()
 
       // This is the expected assignment.
@@ -139,7 +134,7 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
       // Heartbeats until the partitions are assigned.
       consumerGroupHeartbeatResponse = null
       TestUtils.waitUntilTrue(() => {
-        consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+        consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
         consumerGroupHeartbeatResponse.data.errorCode == Errors.NONE.code &&
           consumerGroupHeartbeatResponse.data.assignment == expectedAssignment
       }, msg = s"Could not get partitions assigned. Last response $consumerGroupHeartbeatResponse.")
@@ -153,11 +148,10 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
         new ConsumerGroupHeartbeatRequestData()
           .setGroupId("grp")
           .setMemberId(consumerGroupHeartbeatResponse.data.memberId)
-          .setMemberEpoch(-1),
-        true
+          .setMemberEpoch(-1)
       ).build()
 
-      consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+      consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
 
       // Verify the response.
       assertEquals(-1, consumerGroupHeartbeatResponse.data.memberEpoch)
@@ -180,23 +174,22 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
       )
 
       // Heartbeat request to join the group. Note that the member subscribes
-      // to an nonexistent topic.
-      val consumerGroupHeartbeatRequest = new ConsumerGroupHeartbeatRequest.Builder(
+      // to a nonexistent topic.
+      var consumerGroupHeartbeatRequest = new ConsumerGroupHeartbeatRequest.Builder(
         new ConsumerGroupHeartbeatRequestData()
           .setGroupId("grp")
           .setMemberId(Uuid.randomUuid().toString)
           .setMemberEpoch(0)
           .setRebalanceTimeoutMs(5 * 60 * 1000)
-          .setSubscribedTopicRegex("foo")
-          .setTopicPartitions(List.empty.asJava),
-        true
+          .setSubscribedTopicRegex("foo*")
+          .setTopicPartitions(List.empty.asJava)
       ).build()
 
       // Send the request until receiving a successful response. There is a delay
       // here because the group coordinator is loaded in the background.
       var consumerGroupHeartbeatResponse: ConsumerGroupHeartbeatResponse = null
       TestUtils.waitUntilTrue(() => {
-        consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+        consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
         consumerGroupHeartbeatResponse.data.errorCode == Errors.NONE.code
       }, msg = s"Could not join the group successfully. Last response $consumerGroupHeartbeatResponse.")
 
@@ -204,6 +197,65 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
       assertNotNull(consumerGroupHeartbeatResponse.data.memberId)
       assertEquals(1, consumerGroupHeartbeatResponse.data.memberEpoch)
       assertEquals(new ConsumerGroupHeartbeatResponseData.Assignment(), consumerGroupHeartbeatResponse.data.assignment)
+
+      // Create the topic.
+      val topicId = TestUtils.createTopicWithAdminRaw(
+        admin = admin,
+        topic = "foo",
+        numPartitions = 3
+      )
+
+      // Prepare the next heartbeat.
+      consumerGroupHeartbeatRequest = new ConsumerGroupHeartbeatRequest.Builder(
+        new ConsumerGroupHeartbeatRequestData()
+          .setGroupId("grp")
+          .setMemberId(consumerGroupHeartbeatResponse.data.memberId)
+          .setMemberEpoch(consumerGroupHeartbeatResponse.data.memberEpoch)
+      ).build()
+
+      // This is the expected assignment.
+      var expectedAssignment = new ConsumerGroupHeartbeatResponseData.Assignment()
+        .setTopicPartitions(List(new ConsumerGroupHeartbeatResponseData.TopicPartitions()
+          .setTopicId(topicId)
+          .setPartitions(List[Integer](0, 1, 2).asJava)).asJava)
+
+      // Heartbeats until the partitions are assigned.
+      consumerGroupHeartbeatResponse = null
+      TestUtils.waitUntilTrue(() => {
+        consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
+        consumerGroupHeartbeatResponse.data.errorCode == Errors.NONE.code &&
+          consumerGroupHeartbeatResponse.data.assignment == expectedAssignment
+      }, msg = s"Could not get partitions assigned. Last response $consumerGroupHeartbeatResponse.")
+
+      // Verify the response.
+      assertEquals(2, consumerGroupHeartbeatResponse.data.memberEpoch)
+      assertEquals(expectedAssignment, consumerGroupHeartbeatResponse.data.assignment)
+
+      // Delete the topic.
+      admin.deleteTopics(TopicCollection.ofTopicIds(List(topicId).asJava)).all.get
+
+      // Prepare the next heartbeat.
+      consumerGroupHeartbeatRequest = new ConsumerGroupHeartbeatRequest.Builder(
+        new ConsumerGroupHeartbeatRequestData()
+          .setGroupId("grp")
+          .setMemberId(consumerGroupHeartbeatResponse.data.memberId)
+          .setMemberEpoch(consumerGroupHeartbeatResponse.data.memberEpoch)
+      ).build()
+
+      // This is the expected assignment.
+      expectedAssignment = new ConsumerGroupHeartbeatResponseData.Assignment()
+
+      // Heartbeats until the partitions are revoked.
+      consumerGroupHeartbeatResponse = null
+      TestUtils.waitUntilTrue(() => {
+        consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
+        consumerGroupHeartbeatResponse.data.errorCode == Errors.NONE.code &&
+          consumerGroupHeartbeatResponse.data.assignment == expectedAssignment
+      }, msg = s"Could not get partitions revoked. Last response $consumerGroupHeartbeatResponse.")
+
+      // Verify the response.
+      assertEquals(2, consumerGroupHeartbeatResponse.data.memberEpoch)
+      assertEquals(expectedAssignment, consumerGroupHeartbeatResponse.data.assignment)
     } finally {
       admin.close()
     }
@@ -231,20 +283,74 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
           .setMemberEpoch(0)
           .setRebalanceTimeoutMs(5 * 60 * 1000)
           .setSubscribedTopicRegex("[")
-          .setTopicPartitions(List.empty.asJava),
-        true
+          .setTopicPartitions(List.empty.asJava)
       ).build()
 
       // Send the request until receiving a successful response. There is a delay
       // here because the group coordinator is loaded in the background.
       var consumerGroupHeartbeatResponse: ConsumerGroupHeartbeatResponse = null
       TestUtils.waitUntilTrue(() => {
-        consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+        consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
         consumerGroupHeartbeatResponse.data.errorCode == Errors.INVALID_REGULAR_EXPRESSION.code
       }, msg = s"Did not receive the expected error. Last response $consumerGroupHeartbeatResponse.")
 
       // Verify the response.
       assertEquals(Errors.INVALID_REGULAR_EXPRESSION.code, consumerGroupHeartbeatResponse.data.errorCode)
+    } finally {
+      admin.close()
+    }
+  }
+
+  @ClusterTest
+  def testConsumerGroupHeartbeatWithEmptySubscription(): Unit = {
+    val admin = cluster.admin()
+
+    // Creates the __consumer_offsets topics because it won't be created automatically
+    // in this test because it does not use FindCoordinator API.
+    try {
+      TestUtils.createOffsetsTopicWithAdmin(
+        admin = admin,
+        brokers = cluster.brokers.values().asScala.toSeq,
+        controllers = cluster.controllers().values().asScala.toSeq
+      )
+
+      // Heartbeat request to join the group.
+      var consumerGroupHeartbeatRequest = new ConsumerGroupHeartbeatRequest.Builder(
+        new ConsumerGroupHeartbeatRequestData()
+          .setGroupId("grp")
+          .setMemberId(Uuid.randomUuid().toString)
+          .setMemberEpoch(0)
+          .setRebalanceTimeoutMs(5 * 60 * 1000)
+          .setSubscribedTopicRegex("")
+          .setTopicPartitions(List.empty.asJava)
+      ).build()
+
+      // Send the request until receiving a successful response. There is a delay
+      // here because the group coordinator is loaded in the background.
+      var consumerGroupHeartbeatResponse: ConsumerGroupHeartbeatResponse = null
+      TestUtils.waitUntilTrue(() => {
+        consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
+        consumerGroupHeartbeatResponse.data.errorCode == Errors.NONE.code
+      }, msg = s"Did not receive the expected successful response. Last response $consumerGroupHeartbeatResponse.")
+
+      // Heartbeat request to join the group.
+      consumerGroupHeartbeatRequest = new ConsumerGroupHeartbeatRequest.Builder(
+        new ConsumerGroupHeartbeatRequestData()
+          .setGroupId("grp")
+          .setMemberId(Uuid.randomUuid().toString)
+          .setMemberEpoch(0)
+          .setRebalanceTimeoutMs(5 * 60 * 1000)
+          .setSubscribedTopicNames(List.empty.asJava)
+          .setTopicPartitions(List.empty.asJava)
+      ).build()
+
+      // Send the request until receiving a successful response. There is a delay
+      // here because the group coordinator is loaded in the background.
+      consumerGroupHeartbeatResponse = null
+      TestUtils.waitUntilTrue(() => {
+        consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
+        consumerGroupHeartbeatResponse.data.errorCode == Errors.NONE.code
+      }, msg = s"Did not receive the expected successful response. Last response $consumerGroupHeartbeatResponse.")
     } finally {
       admin.close()
     }
@@ -273,15 +379,14 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
           .setMemberEpoch(0)
           .setRebalanceTimeoutMs(5 * 60 * 1000)
           .setSubscribedTopicNames(List("foo").asJava)
-          .setTopicPartitions(List.empty.asJava),
-        true
+          .setTopicPartitions(List.empty.asJava)
       ).build()
 
       // Send the request until receiving a successful response. There is a delay
       // here because the group coordinator is loaded in the background.
       var consumerGroupHeartbeatResponse: ConsumerGroupHeartbeatResponse = null
       TestUtils.waitUntilTrue(() => {
-        consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+        consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
         consumerGroupHeartbeatResponse.data.errorCode == Errors.NONE.code
       }, msg = s"Static member could not join the group successfully. Last response $consumerGroupHeartbeatResponse.")
 
@@ -303,8 +408,7 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
           .setGroupId("grp")
           .setInstanceId(instanceId)
           .setMemberId(consumerGroupHeartbeatResponse.data.memberId)
-          .setMemberEpoch(consumerGroupHeartbeatResponse.data.memberEpoch),
-        true
+          .setMemberEpoch(consumerGroupHeartbeatResponse.data.memberEpoch)
       ).build()
 
       // This is the expected assignment.
@@ -316,7 +420,7 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
       // Heartbeats until the partitions are assigned.
       consumerGroupHeartbeatResponse = null
       TestUtils.waitUntilTrue(() => {
-        consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+        consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
         consumerGroupHeartbeatResponse.data.errorCode == Errors.NONE.code &&
           consumerGroupHeartbeatResponse.data.assignment == expectedAssignment
       }, msg = s"Static member could not get partitions assigned. Last response $consumerGroupHeartbeatResponse.")
@@ -334,11 +438,10 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
           .setGroupId("grp")
           .setInstanceId(instanceId)
           .setMemberId(consumerGroupHeartbeatResponse.data.memberId)
-          .setMemberEpoch(-2),
-        true
+          .setMemberEpoch(-2)
       ).build()
 
-      consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+      consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
 
       // Verify the response.
       assertEquals(-2, consumerGroupHeartbeatResponse.data.memberEpoch)
@@ -352,11 +455,10 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
           .setMemberEpoch(0)
           .setRebalanceTimeoutMs(5 * 60 * 1000)
           .setSubscribedTopicNames(List("foo").asJava)
-          .setTopicPartitions(List.empty.asJava),
-        true
+          .setTopicPartitions(List.empty.asJava)
       ).build()
 
-      consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+      consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
 
       // Verify the response.
       assertNotNull(consumerGroupHeartbeatResponse.data.memberId)
@@ -398,15 +500,14 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
           .setMemberEpoch(0)
           .setRebalanceTimeoutMs(5 * 60 * 1000)
           .setSubscribedTopicNames(List("foo").asJava)
-          .setTopicPartitions(List.empty.asJava),
-        true
+          .setTopicPartitions(List.empty.asJava)
       ).build()
 
       // Send the request until receiving a successful response. There is a delay
       // here because the group coordinator is loaded in the background.
       var consumerGroupHeartbeatResponse: ConsumerGroupHeartbeatResponse = null
       TestUtils.waitUntilTrue(() => {
-        consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+        consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
         consumerGroupHeartbeatResponse.data.errorCode == Errors.NONE.code
       }, msg = s"Could not join the group successfully. Last response $consumerGroupHeartbeatResponse.")
 
@@ -428,8 +529,7 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
           .setGroupId("grp")
           .setInstanceId(instanceId)
           .setMemberId(consumerGroupHeartbeatResponse.data.memberId)
-          .setMemberEpoch(consumerGroupHeartbeatResponse.data.memberEpoch),
-        true
+          .setMemberEpoch(consumerGroupHeartbeatResponse.data.memberEpoch)
       ).build()
 
       // This is the expected assignment.
@@ -441,7 +541,7 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
       // Heartbeats until the partitions are assigned.
       consumerGroupHeartbeatResponse = null
       TestUtils.waitUntilTrue(() => {
-        consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+        consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
         consumerGroupHeartbeatResponse.data.errorCode == Errors.NONE.code &&
           consumerGroupHeartbeatResponse.data.assignment == expectedAssignment
       }, msg = s"Could not get partitions assigned. Last response $consumerGroupHeartbeatResponse.")
@@ -459,19 +559,18 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
           .setMemberEpoch(0)
           .setRebalanceTimeoutMs(5 * 60 * 1000)
           .setSubscribedTopicNames(List("foo").asJava)
-          .setTopicPartitions(List.empty.asJava),
-        true
+          .setTopicPartitions(List.empty.asJava)
       ).build()
 
       // Validating that trying to join with an in-use instanceId would throw an UnreleasedInstanceIdException.
-      consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+      consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
       assertEquals(Errors.UNRELEASED_INSTANCE_ID.code, consumerGroupHeartbeatResponse.data.errorCode)
 
       // The new static member join group will keep failing with an UnreleasedInstanceIdException
       // until eventually it gets through because the existing member will be kicked out
       // because of not sending a heartbeat till session timeout expiry.
       TestUtils.waitUntilTrue(() => {
-        consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+        consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
         consumerGroupHeartbeatResponse.data.errorCode == Errors.NONE.code &&
           consumerGroupHeartbeatResponse.data.assignment == expectedAssignment
       }, msg = s"Could not re-join the group successfully. Last response $consumerGroupHeartbeatResponse.")
@@ -514,15 +613,14 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
           .setMemberEpoch(0)
           .setRebalanceTimeoutMs(5 * 60 * 1000)
           .setSubscribedTopicNames(List("foo").asJava)
-          .setTopicPartitions(List.empty.asJava),
-        true
+          .setTopicPartitions(List.empty.asJava)
       ).build()
 
       // Send the request until receiving a successful response. There is a delay
       // here because the group coordinator is loaded in the background.
       var consumerGroupHeartbeatResponse: ConsumerGroupHeartbeatResponse = null
       TestUtils.waitUntilTrue(() => {
-        consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+        consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
         consumerGroupHeartbeatResponse.data.errorCode == Errors.NONE.code
       }, msg = s"Could not join the group successfully. Last response $consumerGroupHeartbeatResponse.")
 
@@ -545,13 +643,12 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
           .setGroupId(consumerGroupId)
           .setInstanceId(instanceId)
           .setMemberId(consumerGroupHeartbeatResponse.data.memberId)
-          .setMemberEpoch(consumerGroupHeartbeatResponse.data.memberEpoch),
-        true
+          .setMemberEpoch(consumerGroupHeartbeatResponse.data.memberEpoch)
       ).build()
 
       // Verify the response. The heartbeat interval was updated.
       TestUtils.waitUntilTrue(() => {
-        consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+        consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
         consumerGroupHeartbeatResponse.data.errorCode == Errors.NONE.code &&
           newHeartbeatIntervalMs == consumerGroupHeartbeatResponse.data.heartbeatIntervalMs
       }, msg = s"Dynamic update consumer group config failed. Last response $consumerGroupHeartbeatResponse.")
@@ -579,13 +676,12 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
           .setMemberEpoch(0)
           .setRebalanceTimeoutMs(5 * 60 * 1000)
           .setSubscribedTopicNames(List("foo").asJava)
-          .setTopicPartitions(List.empty.asJava),
-        true
+          .setTopicPartitions(List.empty.asJava)
       ).build()
 
       var consumerGroupHeartbeatResponse: ConsumerGroupHeartbeatResponse = null
       TestUtils.waitUntilTrue(() => {
-        consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+        consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
         consumerGroupHeartbeatResponse.data.errorCode == Errors.INVALID_REQUEST.code
       }, msg = "Should fail due to invalid member id.")
     } finally {
@@ -611,13 +707,12 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
         .setMemberEpoch(0)
         .setRebalanceTimeoutMs(5 * 60 * 1000)
         .setSubscribedTopicNames(List("foo").asJava)
-        .setTopicPartitions(List.empty.asJava),
-      true
+        .setTopicPartitions(List.empty.asJava)
     ).build(0)
 
     var consumerGroupHeartbeatResponse: ConsumerGroupHeartbeatResponse = null
     TestUtils.waitUntilTrue(() => {
-      consumerGroupHeartbeatResponse = connectAndReceive(consumerGroupHeartbeatRequest)
+      consumerGroupHeartbeatResponse = connectAndReceive[ConsumerGroupHeartbeatResponse](consumerGroupHeartbeatRequest)
       consumerGroupHeartbeatResponse.data.errorCode == Errors.NONE.code
     }, msg = s"Could not join the group successfully. Last response $consumerGroupHeartbeatResponse.")
 
@@ -625,13 +720,5 @@ class ConsumerGroupHeartbeatRequestTest(cluster: ClusterInstance) {
     assertNotNull(memberId)
     assertFalse(memberId.isEmpty)
     admin.close()
-  }
-
-  private def connectAndReceive(request: ConsumerGroupHeartbeatRequest): ConsumerGroupHeartbeatResponse = {
-    IntegrationTestUtils.connectAndReceive[ConsumerGroupHeartbeatResponse](
-      request,
-      cluster.anyBrokerSocketServer(),
-      cluster.clientListener()
-    )
   }
 }

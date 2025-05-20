@@ -51,6 +51,7 @@ import org.apache.kafka.common.record.MemoryRecordsBuilder;
 import org.apache.kafka.common.record.Records;
 import org.apache.kafka.common.record.TimestampType;
 import org.apache.kafka.common.security.auth.SecurityProtocol;
+import org.apache.kafka.server.common.OffsetAndEpoch;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
@@ -58,16 +59,22 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mockito;
 
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
-import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
 import java.util.stream.Stream;
 
-import static java.util.Collections.singletonList;
-import static java.util.Collections.singletonMap;
+import static org.apache.kafka.raft.KafkaRaftClient.RETRY_BACKOFF_BASE_MS;
+import static org.apache.kafka.raft.RaftUtil.binaryExponentialElectionBackoffMs;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class RaftUtilTest {
 
@@ -75,6 +82,8 @@ public class RaftUtilTest {
     private final ListenerName listenerName = ListenerName.forSecurityProtocol(SecurityProtocol.PLAINTEXT);
     private final InetSocketAddress address = InetSocketAddress.createUnresolved("localhost", 9990);
     private final String clusterId = "I4ZmrWqfT2e-upky_4fdPA";
+    private static final Uuid TEST_DIRECTORY_ID1 = Uuid.randomUuid();
+    private static final Uuid TEST_DIRECTORY_ID2 = Uuid.randomUuid();
 
     @Test
     public void testErrorResponse() {
@@ -93,13 +102,6 @@ public class RaftUtilTest {
 
     private static Stream<Arguments> singletonFetchRequestTestCases() {
         return Stream.of(
-                Arguments.of(new FetchRequestTestCase(Uuid.ZERO_UUID, (short) 0, (short) -1,
-                        "{\"replicaId\":-1,\"maxWaitMs\":0,\"minBytes\":0,\"topics\":[{\"topic\":\"topic\"," +
-                            "\"partitions\":[{\"partition\":2,\"fetchOffset\":333,\"partitionMaxBytes\":10}]}]}")),
-                Arguments.of(new FetchRequestTestCase(Uuid.ZERO_UUID, (short) 3, (short) -1,
-                        "{\"replicaId\":-1,\"maxWaitMs\":0,\"minBytes\":0,\"maxBytes\":2147483647," +
-                            "\"topics\":[{\"topic\":\"topic\",\"partitions\":[{\"partition\":2,\"fetchOffset\":333," +
-                            "\"partitionMaxBytes\":10}]}]}")),
                 Arguments.of(new FetchRequestTestCase(Uuid.ZERO_UUID, (short) 4, (short) -1,
                         "{\"replicaId\":-1,\"maxWaitMs\":0,\"minBytes\":0,\"maxBytes\":2147483647,\"isolationLevel\":0," +
                             "\"topics\":[{\"topic\":\"topic\",\"partitions\":[{\"partition\":2,\"fetchOffset\":333," +
@@ -139,12 +141,6 @@ public class RaftUtilTest {
 
     private static Stream<Arguments> singletonFetchResponseTestCases() {
         return Stream.of(
-                Arguments.of(new FetchResponseTestCase((short) 0, -1,
-                        "{\"responses\":[{\"topic\":\"topic\",\"partitions\":[{\"partitionIndex\":1," +
-                            "\"errorCode\":0,\"highWatermark\":1000,\"records\":\"\"}]}]}")),
-                Arguments.of(new FetchResponseTestCase((short) 1, -1,
-                        "{\"throttleTimeMs\":0,\"responses\":[{\"topic\":\"topic\",\"partitions\":" +
-                            "[{\"partitionIndex\":1,\"errorCode\":0,\"highWatermark\":1000,\"records\":\"\"}]}]}")),
                 Arguments.of(new FetchResponseTestCase((short) 4, -1,
                         "{\"throttleTimeMs\":0,\"responses\":[{\"topic\":\"topic\",\"partitions\":" +
                             "[{\"partitionIndex\":1,\"errorCode\":0,\"highWatermark\":1000,\"lastStableOffset\":900," +
@@ -187,13 +183,26 @@ public class RaftUtilTest {
         return Stream.of(
                 Arguments.of((short) 0,
                         "{\"clusterId\":\"I4ZmrWqfT2e-upky_4fdPA\",\"topics\":[{\"topicName\":\"topic\"," +
-                            "\"partitions\":[{\"partitionIndex\":1,\"candidateEpoch\":1,\"candidateId\":1," +
+                            "\"partitions\":[{\"partitionIndex\":1,\"replicaEpoch\":1,\"replicaId\":1," +
                             "\"lastOffsetEpoch\":1000,\"lastOffset\":1000}]}]}"),
                 Arguments.of((short) 1,
                         "{\"clusterId\":\"I4ZmrWqfT2e-upky_4fdPA\",\"voterId\":2,\"topics\":[{" +
-                            "\"topicName\":\"topic\",\"partitions\":[{\"partitionIndex\":1,\"candidateEpoch\":1," +
-                            "\"candidateId\":1,\"candidateDirectoryId\":\"AAAAAAAAAAAAAAAAAAAAAQ\"," +
-                            "\"voterDirectoryId\":\"AAAAAAAAAAAAAAAAAAAAAQ\",\"lastOffsetEpoch\":1000,\"lastOffset\":1000}]}]}")
+                            "\"topicName\":\"topic\",\"partitions\":[{\"partitionIndex\":1,\"replicaEpoch\":1," +
+                            "\"replicaId\":1,\"replicaDirectoryId\":\"" + TEST_DIRECTORY_ID1 + "\"," +
+                            "\"voterDirectoryId\":\"" + TEST_DIRECTORY_ID2 + "\",\"lastOffsetEpoch\":1000," +
+                            "\"lastOffset\":1000}]}]}"),
+                Arguments.of((short) 2,
+                        "{\"clusterId\":\"I4ZmrWqfT2e-upky_4fdPA\",\"voterId\":2,\"topics\":[{" +
+                            "\"topicName\":\"topic\",\"partitions\":[{\"partitionIndex\":1,\"replicaEpoch\":1," +
+                            "\"replicaId\":1,\"replicaDirectoryId\":\"" + TEST_DIRECTORY_ID1 + "\"," +
+                            "\"voterDirectoryId\":\"" + TEST_DIRECTORY_ID2 + "\",\"lastOffsetEpoch\":1000," +
+                            "\"lastOffset\":1000,\"preVote\":true}]}]}"),
+                Arguments.of((short) 2,
+                        "{\"clusterId\":\"I4ZmrWqfT2e-upky_4fdPA\",\"voterId\":2,\"topics\":[{" +
+                            "\"topicName\":\"topic\",\"partitions\":[{\"partitionIndex\":1,\"replicaEpoch\":1," +
+                            "\"replicaId\":1,\"replicaDirectoryId\":\"" + TEST_DIRECTORY_ID1 + "\"," +
+                            "\"voterDirectoryId\":\"" + TEST_DIRECTORY_ID2 + "\",\"lastOffsetEpoch\":1000," +
+                            "\"lastOffset\":1000,\"preVote\":true}]}]}")
         );
     }
 
@@ -203,6 +212,10 @@ public class RaftUtilTest {
                         "{\"errorCode\":0,\"topics\":[{\"topicName\":\"topic\",\"partitions\":[{" +
                             "\"partitionIndex\":0,\"errorCode\":0,\"leaderId\":1,\"leaderEpoch\":1,\"voteGranted\":true}]}]}"),
                 Arguments.of((short) 1,
+                        "{\"errorCode\":0,\"topics\":[{\"topicName\":\"topic\",\"partitions\":[{" +
+                            "\"partitionIndex\":0,\"errorCode\":0,\"leaderId\":1,\"leaderEpoch\":1,\"voteGranted\":true}]}]," +
+                            "\"nodeEndpoints\":[{\"nodeId\":1,\"host\":\"localhost\",\"port\":9990}]}"),
+                Arguments.of((short) 2,
                         "{\"errorCode\":0,\"topics\":[{\"topicName\":\"topic\",\"partitions\":[{" +
                             "\"partitionIndex\":0,\"errorCode\":0,\"leaderId\":1,\"leaderEpoch\":1,\"voteGranted\":true}]}]," +
                             "\"nodeEndpoints\":[{\"nodeId\":1,\"host\":\"localhost\",\"port\":9990}]}")
@@ -335,6 +348,29 @@ public class RaftUtilTest {
         assertEquals(testCase.expectedJson, json.toString());
     }
 
+    // Test that the replicaDirectoryId field introduced in version 17 is ignorable for older versions.
+    // This is done by setting a FetchPartition's replicaDirectoryId explicitly to a non-zero uuid and
+    // checking that the FetchRequestData can still be written to an older version specified by
+    // testCase.version.
+    @ParameterizedTest
+    @MethodSource("singletonFetchRequestTestCases")
+    public void testFetchRequestV17Compatibility(final FetchRequestTestCase testCase) {
+        FetchRequestData fetchRequestData = RaftUtil.singletonFetchRequest(
+            topicPartition,
+            Uuid.ONE_UUID,
+            partition -> partition
+                .setPartitionMaxBytes(10)
+                .setCurrentLeaderEpoch(5)
+                .setFetchOffset(333)
+                .setLastFetchedEpoch(testCase.lastFetchedEpoch)
+                .setPartition(2)
+                .setReplicaDirectoryId(Uuid.ONE_UUID)
+                .setLogStartOffset(0)
+        );
+        JsonNode json = FetchRequestDataJsonConverter.write(fetchRequestData, testCase.version);
+        assertEquals(testCase.expectedJson, json.toString());
+    }
+
     @ParameterizedTest
     @MethodSource("singletonFetchResponseTestCases")
     public void testSingletonFetchResponseForAllVersion(final FetchResponseTestCase testCase) {
@@ -363,7 +399,7 @@ public class RaftUtilTest {
                         .setSnapshotId(new FetchResponseData.SnapshotId())
                         .setErrorCode(Errors.NONE.code())
                         .setCurrentLeader(new FetchResponseData.LeaderIdAndEpoch())
-                        .setAbortedTransactions(singletonList(
+                        .setAbortedTransactions(List.of(
                                 new FetchResponseData.AbortedTransaction()
                                         .setProducerId(producerId)
                                         .setFirstOffset(firstOffset)
@@ -377,18 +413,19 @@ public class RaftUtilTest {
     @ParameterizedTest
     @MethodSource("voteRequestTestCases")
     public void testSingletonVoteRequestForAllVersion(final short version, final String expectedJson) {
-        int candidateEpoch = 1;
+        int replicaEpoch = 1;
         int lastEpoch = 1000;
         long lastEpochOffset = 1000;
 
         VoteRequestData voteRequestData = RaftUtil.singletonVoteRequest(
-                topicPartition,
-                clusterId,
-                candidateEpoch,
-                ReplicaKey.of(1, Uuid.ONE_UUID),
-                ReplicaKey.of(2, Uuid.ONE_UUID),
-                lastEpoch,
-                lastEpochOffset
+            topicPartition,
+            clusterId,
+            replicaEpoch,
+            ReplicaKey.of(1, TEST_DIRECTORY_ID1),
+            ReplicaKey.of(2, TEST_DIRECTORY_ID2),
+            lastEpoch,
+            lastEpochOffset,
+            version >= 2
         );
         JsonNode json = VoteRequestDataJsonConverter.write(voteRequestData, version);
         assertEquals(expectedJson, json.toString());
@@ -409,7 +446,7 @@ public class RaftUtilTest {
                 leaderEpoch,
                 leaderId,
                 true,
-                Endpoints.fromInetSocketAddresses(singletonMap(listenerName, address))
+                Endpoints.fromInetSocketAddresses(Map.of(listenerName, address))
         );
         JsonNode json = VoteResponseDataJsonConverter.write(voteResponseData, version);
         assertEquals(expectedJson, json.toString());
@@ -437,6 +474,35 @@ public class RaftUtilTest {
         assertEquals(expectedJson, json.toString());
     }
 
+    // Test that the replicaDirectoryId field introduced in version 1 is ignorable for version 0
+    // This is done by setting a FetchPartition's replicaDirectoryId explicitly to a non-zero uuid and
+    // checking that the FetchSnapshotRequestData can still be written to an older version specified by
+    // testCase.version.
+    @ParameterizedTest
+    @MethodSource("fetchSnapshotRequestTestCases")
+    public void testSingletonFetchSnapshotRequestV1Compatibility(
+        short version,
+        Uuid directoryId,
+        String expectedJson
+    ) {
+        int epoch = 1;
+        int maxBytes = 1000;
+        int position = 10;
+
+        FetchSnapshotRequestData fetchSnapshotRequestData = RaftUtil.singletonFetchSnapshotRequest(
+            clusterId,
+            ReplicaKey.of(1, directoryId),
+            topicPartition,
+            epoch,
+            new OffsetAndEpoch(10, epoch),
+            maxBytes,
+            position
+        );
+        fetchSnapshotRequestData.topics().get(0).partitions().get(0).setReplicaDirectoryId(Uuid.ONE_UUID);
+        JsonNode json = FetchSnapshotRequestDataJsonConverter.write(fetchSnapshotRequestData, version);
+        assertEquals(expectedJson, json.toString());
+    }
+
     @ParameterizedTest
     @MethodSource("fetchSnapshotResponseTestCases")
     public void testSingletonFetchSnapshotResponseForAllVersion(final short version, final String expectedJson) {
@@ -447,7 +513,7 @@ public class RaftUtilTest {
                 version,
                 topicPartition,
                 leaderId,
-                Endpoints.fromInetSocketAddresses(singletonMap(listenerName, address)),
+                Endpoints.fromInetSocketAddresses(Map.of(listenerName, address)),
                 responsePartitionSnapshot -> responsePartitionSnapshot
         );
 
@@ -466,7 +532,7 @@ public class RaftUtilTest {
                 clusterId,
                 leaderEpoch,
                 leaderId,
-                Endpoints.fromInetSocketAddresses(singletonMap(listenerName, address)),
+                Endpoints.fromInetSocketAddresses(Map.of(listenerName, address)),
                 ReplicaKey.of(1, Uuid.ONE_UUID)
         );
         JsonNode json = BeginQuorumEpochRequestDataJsonConverter.write(beginQuorumEpochRequestData, version);
@@ -487,7 +553,7 @@ public class RaftUtilTest {
                 Errors.NONE,
                 leaderEpoch,
                 leaderId,
-                Endpoints.fromInetSocketAddresses(singletonMap(listenerName, address))
+                Endpoints.fromInetSocketAddresses(Map.of(listenerName, address))
         );
         JsonNode json = BeginQuorumEpochResponseDataJsonConverter.write(beginQuorumEpochResponseData, version);
         assertEquals(expectedJson, json.toString());
@@ -504,7 +570,7 @@ public class RaftUtilTest {
                 clusterId,
                 leaderEpoch,
                 leaderId,
-                singletonList(ReplicaKey.of(1, Uuid.ONE_UUID))
+                List.of(ReplicaKey.of(1, Uuid.ONE_UUID))
         );
         JsonNode json = EndQuorumEpochRequestDataJsonConverter.write(endQuorumEpochRequestData, version);
         assertEquals(expectedJson, json.toString());
@@ -524,7 +590,7 @@ public class RaftUtilTest {
                 Errors.NONE,
                 leaderEpoch,
                 leaderId,
-                Endpoints.fromInetSocketAddresses(singletonMap(listenerName, address))
+                Endpoints.fromInetSocketAddresses(Map.of(listenerName, address))
         );
         JsonNode json = EndQuorumEpochResponseDataJsonConverter.write(endQuorumEpochResponseData, version);
         assertEquals(expectedJson, json.toString());
@@ -554,12 +620,66 @@ public class RaftUtilTest {
                 leaderId,
                 leaderEpoch,
                 highWatermark,
-                Collections.singletonList(replicaState),
-                Collections.singletonList(replicaState),
+                List.of(replicaState),
+                List.of(replicaState),
                 0
         );
         JsonNode json = DescribeQuorumResponseDataJsonConverter.write(describeQuorumResponseData, version);
         assertEquals(expectedJson, json.toString());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13})
+    public void testExponentialBoundOfExponentialElectionBackoffMs(int retries) {
+        Random mockedRandom = Mockito.mock(Random.class);
+        int electionBackoffMaxMs = 1000;
+
+        // test the bound of the method's first call to random.nextInt
+        binaryExponentialElectionBackoffMs(electionBackoffMaxMs, RETRY_BACKOFF_BASE_MS, retries, mockedRandom);
+        ArgumentCaptor<Integer> nextIntCaptor = ArgumentCaptor.forClass(Integer.class);
+        Mockito.verify(mockedRandom).nextInt(Mockito.eq(1), nextIntCaptor.capture());
+        int actualBound = nextIntCaptor.getValue();
+        int expectedBound = (int) (2 * Math.pow(2, retries - 1));
+        // after the 10th retry, the bound of the first call to random.nextInt will remain capped to
+        // (RETRY_BACKOFF_BASE_MS * 2 << 10)=2048 to prevent overflow
+        if (retries > 10) {
+            expectedBound = 2048;
+        }
+        assertEquals(expectedBound, actualBound, "Incorrect bound for retries=" + retries);
+    }
+
+    // test that the return value of the method is capped to QUORUM_ELECTION_BACKOFF_MAX_MS_CONFIG + jitter
+    // any exponential >= (1000 + jitter)/(RETRY_BACKOFF_BASE_MS)=21 will result in this cap
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 20, 21, 22, 2048})
+    public void testExponentialElectionBackoffMsIsCapped(int exponential) {
+        Random mockedRandom = Mockito.mock(Random.class);
+        int electionBackoffMaxMs = 1000;
+        // this is the max bound of the method's first call to random.nextInt
+        int firstNextIntMaxBound = 2048;
+
+        int jitterMs = 50;
+        Mockito.when(mockedRandom.nextInt(1, firstNextIntMaxBound)).thenReturn(exponential);
+        Mockito.when(mockedRandom.nextInt(RETRY_BACKOFF_BASE_MS)).thenReturn(jitterMs);
+
+        int returnedBackoffMs = binaryExponentialElectionBackoffMs(electionBackoffMaxMs, RETRY_BACKOFF_BASE_MS, 11, mockedRandom);
+
+        // verify nextInt was called on both expected bounds
+        ArgumentCaptor<Integer> nextIntCaptor = ArgumentCaptor.forClass(Integer.class);
+        Mockito.verify(mockedRandom).nextInt(Mockito.eq(1), nextIntCaptor.capture());
+        Mockito.verify(mockedRandom).nextInt(nextIntCaptor.capture());
+        List<Integer> allCapturedBounds = nextIntCaptor.getAllValues();
+        assertEquals(firstNextIntMaxBound, allCapturedBounds.get(0));
+        assertEquals(RETRY_BACKOFF_BASE_MS, allCapturedBounds.get(1));
+
+        // finally verify the backoff returned is capped to electionBackoffMaxMs + jitterMs
+        int backoffValueCap = electionBackoffMaxMs + jitterMs;
+        if (exponential < 21) {
+            assertEquals(RETRY_BACKOFF_BASE_MS * exponential, returnedBackoffMs);
+            assertTrue(returnedBackoffMs < backoffValueCap);
+        } else {
+            assertEquals(backoffValueCap, returnedBackoffMs);
+        }
     }
 
     private Records createRecords() {

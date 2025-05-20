@@ -41,6 +41,7 @@ import org.apache.kafka.streams.processor.api.ProcessorSupplier;
 import org.apache.kafka.streams.processor.api.Record;
 import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
 import org.apache.kafka.streams.state.KeyValueStore;
+import org.apache.kafka.streams.state.StoreBuilder;
 import org.apache.kafka.test.MockStateRestoreListener;
 import org.apache.kafka.test.TestUtils;
 
@@ -102,21 +103,23 @@ public class GlobalStreamThreadTest {
             );
 
         final ProcessorSupplier<Object, Object, Void, Void> processorSupplier = () ->
-            new ContextualProcessor<Object, Object, Void, Void>() {
+            new ContextualProcessor<>() {
                 @Override
                 public void process(final Record<Object, Object> record) {
                 }
             };
 
+        final StoreFactory storeFactory =
+                new KeyValueStoreMaterializer<>(materialized).withLoggingDisabled();
+        final StoreBuilder<?> storeBuilder = new StoreFactory.FactoryWrappingStoreBuilder<>(storeFactory);
         builder.addGlobalStore(
-            new KeyValueStoreMaterializer<>(materialized).withLoggingDisabled(),
             "sourceName",
             null,
             null,
             null,
             GLOBAL_STORE_TOPIC_NAME,
             "processorName",
-            processorSupplier,
+            new StoreDelegatingProcessorSupplier<>(processorSupplier, Set.of(storeBuilder)),
             false
         );
 
@@ -160,7 +163,7 @@ public class GlobalStreamThreadTest {
 
     @Test
     public void shouldThrowStreamsExceptionOnStartupIfExceptionOccurred() throws Exception {
-        final MockConsumer<byte[], byte[]> mockConsumer = new MockConsumer<byte[], byte[]>(AutoOffsetResetStrategy.EARLIEST.name()) {
+        final MockConsumer<byte[], byte[]> mockConsumer = new MockConsumer<>(AutoOffsetResetStrategy.EARLIEST.name()) {
             @Override
             public List<PartitionInfo> partitionsFor(final String topic) {
                 throw new RuntimeException("KABOOM!");

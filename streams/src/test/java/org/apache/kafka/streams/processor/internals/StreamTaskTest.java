@@ -157,8 +157,8 @@ public class StreamTaskTest {
     private final LogContext logContext = new LogContext("[test] ");
     private final String topic1 = "topic1";
     private final String topic2 = "topic2";
-    private final TopicPartition partition1 = new TopicPartition(topic1, 1);
-    private final TopicPartition partition2 = new TopicPartition(topic2, 1);
+    private final TopicPartition partition1 = new TopicPartition(topic1, 0);
+    private final TopicPartition partition2 = new TopicPartition(topic2, 0);
     private final Set<TopicPartition> partitions = new HashSet<>(List.of(partition1, partition2));
     private final Serializer<Integer> intSerializer = new IntegerSerializer();
     private final Deserializer<Integer> intDeserializer = new IntegerDeserializer();
@@ -646,6 +646,22 @@ public class StreamTaskTest {
     }
 
     @Test
+    public void shouldNotGetOffsetsIfPrepareCommitDirty() {
+        when(stateManager.taskId()).thenReturn(taskId);
+        when(stateManager.taskType()).thenReturn(TaskType.ACTIVE);
+        task = createStatefulTask(createConfig("100"), false);
+
+        task.addRecords(partition1, List.of(getConsumerRecordWithOffsetAsTimestamp(partition1, 0)));
+        task.addRecords(partition2, List.of(getConsumerRecordWithOffsetAsTimestamp(partition2, 0)));
+
+        assertTrue(task.process(0L));
+        assertTrue(task.commitNeeded());
+
+        // committableOffsetsAndMetadata() has not been called, otherwise prepareCommit() would have returned a map
+        assertNull(task.prepareCommit(false));
+    }
+
+    @Test
     public void shouldProcessRecordsAfterPrepareCommitWhenEosDisabled() {
         when(stateManager.taskId()).thenReturn(taskId);
         when(stateManager.taskType()).thenReturn(TaskType.ACTIVE);
@@ -660,7 +676,7 @@ public class StreamTaskTest {
         ));
 
         assertTrue(task.process(time.milliseconds()));
-        task.prepareCommit();
+        task.prepareCommit(true);
         assertTrue(task.process(time.milliseconds()));
         task.postCommit(false);
         assertTrue(task.process(time.milliseconds()));
@@ -683,7 +699,7 @@ public class StreamTaskTest {
         ));
 
         assertTrue(task.process(time.milliseconds()));
-        task.prepareCommit();
+        task.prepareCommit(true);
         assertFalse(task.process(time.milliseconds()));
         task.postCommit(false);
         assertTrue(task.process(time.milliseconds()));
@@ -750,7 +766,7 @@ public class StreamTaskTest {
         metrics = new Metrics(new MetricConfig().recordLevel(Sensor.RecordingLevel.INFO), time);
 
         // Create a processor that only forwards even keys to test the metrics at the source and terminal nodes
-        final MockSourceNode<Integer, Integer> evenKeyForwardingSourceNode = new MockSourceNode<Integer, Integer>(intDeserializer, intDeserializer) {
+        final MockSourceNode<Integer, Integer> evenKeyForwardingSourceNode = new MockSourceNode<>(intDeserializer, intDeserializer) {
             InternalProcessorContext<Integer, Integer> context;
 
             @Override
@@ -1083,6 +1099,70 @@ public class StreamTaskTest {
     }
 
     @Test
+    public void shouldResumePartitionWhenSkippingOverRecordsWithInvalidTs() {
+        when(stateManager.taskId()).thenReturn(taskId);
+        when(stateManager.taskType()).thenReturn(TaskType.ACTIVE);
+        task = createStatelessTask(createConfig(
+            StreamsConfig.AT_LEAST_ONCE,
+            "-1",
+            LogAndContinueExceptionHandler.class,
+            LogAndFailProcessingExceptionHandler.class,
+            LogAndSkipOnInvalidTimestamp.class
+        ));
+        task.initializeIfNeeded();
+        task.completeRestoration(noOpResetter -> { });
+
+        task.addRecords(partition1, asList(
+            getConsumerRecordWithOffsetAsTimestamp(partition1, 10),
+            getConsumerRecordWithOffsetAsTimestamp(partition1, 20),
+            getConsumerRecordWithInvalidTimestamp(30),
+            getConsumerRecordWithInvalidTimestamp(40),
+            getConsumerRecordWithInvalidTimestamp(50)
+        ));
+        assertTrue(consumer.paused().contains(partition1));
+
+        assertTrue(task.process(0L));
+
+        task.resumePollingForPartitionsWithAvailableSpace();
+        assertTrue(consumer.paused().contains(partition1));
+
+        assertTrue(task.process(0L));
+
+        task.resumePollingForPartitionsWithAvailableSpace();
+        assertEquals(0, consumer.paused().size());
+
+        assertTrue(task.process(0L)); // drain head record (ie, last invalid record)
+        assertFalse(task.process(0L));
+        assertFalse(task.hasRecordsQueued());
+
+
+        // repeat test for deserialization error
+        task.resumePollingForPartitionsWithAvailableSpace();
+        task.addRecords(partition1, asList(
+            getConsumerRecordWithOffsetAsTimestamp(partition1, 110),
+            getConsumerRecordWithOffsetAsTimestamp(partition1, 120),
+            getCorruptedConsumerRecordWithOffsetAsTimestamp(130),
+            getCorruptedConsumerRecordWithOffsetAsTimestamp(140),
+            getCorruptedConsumerRecordWithOffsetAsTimestamp(150)
+        ));
+        assertTrue(consumer.paused().contains(partition1));
+
+        assertTrue(task.process(0L));
+
+        task.resumePollingForPartitionsWithAvailableSpace();
+        assertTrue(consumer.paused().contains(partition1));
+
+        assertTrue(task.process(0L));
+
+        task.resumePollingForPartitionsWithAvailableSpace();
+        assertEquals(0, consumer.paused().size());
+
+        assertTrue(task.process(0L)); // drain head record (ie, last corrupted record)
+        assertFalse(task.process(0L));
+        assertFalse(task.hasRecordsQueued());
+    }
+
+    @Test
     public void shouldPunctuateOnceStreamTimeAfterGap() {
         when(stateManager.taskId()).thenReturn(taskId);
         when(stateManager.taskType()).thenReturn(TaskType.ACTIVE);
@@ -1264,7 +1344,7 @@ public class StreamTaskTest {
         assertTrue(task.process(0L));
         assertTrue(task.commitNeeded());
 
-        task.prepareCommit();
+        task.prepareCommit(true);
         assertTrue(task.commitNeeded());
 
         task.postCommit(true);
@@ -1274,7 +1354,7 @@ public class StreamTaskTest {
         assertTrue(task.maybePunctuateStreamTime());
         assertTrue(task.commitNeeded());
 
-        task.prepareCommit();
+        task.prepareCommit(true);
         assertTrue(task.commitNeeded());
 
         task.postCommit(true);
@@ -1285,7 +1365,7 @@ public class StreamTaskTest {
         assertTrue(task.maybePunctuateSystemTime());
         assertTrue(task.commitNeeded());
 
-        task.prepareCommit();
+        task.prepareCommit(true);
         assertTrue(task.commitNeeded());
 
         task.postCommit(true);
@@ -1310,7 +1390,7 @@ public class StreamTaskTest {
         task.process(0L);
         processorSystemTime.mockProcessor.addProcessorMetadata("key2", 200L);
 
-        final Map<TopicPartition, OffsetAndMetadata> offsetsAndMetadata = task.prepareCommit();
+        final Map<TopicPartition, OffsetAndMetadata> offsetsAndMetadata = task.prepareCommit(true);
         final TopicPartitionMetadata expected = new TopicPartitionMetadata(3L,
             new ProcessorMetadata(
                 mkMap(
@@ -1349,7 +1429,7 @@ public class StreamTaskTest {
         final TopicPartitionMetadata metadata = new TopicPartitionMetadata(0, new ProcessorMetadata());
 
         assertTrue(task.commitNeeded());
-        assertThat(task.prepareCommit(), equalTo(
+        assertThat(task.prepareCommit(true), equalTo(
                 mkMap(
                         mkEntry(partition1, new OffsetAndMetadata(3L, Optional.of(2), metadata.encode()))
                 )
@@ -1366,7 +1446,7 @@ public class StreamTaskTest {
         task.process(0L);
 
         assertTrue(task.commitNeeded());
-        assertThat(task.prepareCommit(), equalTo(
+        assertThat(task.prepareCommit(true), equalTo(
             mkMap(
                 mkEntry(partition1, new OffsetAndMetadata(3L, Optional.of(2), metadata.encode())),
                 mkEntry(partition2, new OffsetAndMetadata(1L, Optional.of(0), metadata.encode()))
@@ -1422,7 +1502,7 @@ public class StreamTaskTest {
 
         assertTrue(task.commitNeeded());
 
-        assertThat(task.prepareCommit(), equalTo(
+        assertThat(task.prepareCommit(true), equalTo(
             mkMap(
                 mkEntry(partition1, new OffsetAndMetadata(1L,  Optional.of(1), expectedMetadata1.encode())),
                 mkEntry(partition2, new OffsetAndMetadata(2L, Optional.of(1), expectedMetadata2.encode()))
@@ -1445,7 +1525,7 @@ public class StreamTaskTest {
         assertTrue(task.commitNeeded());
 
         // Processor metadata not updated, we just need to commit to partition1 again with new offset
-        assertThat(task.prepareCommit(), equalTo(
+        assertThat(task.prepareCommit(true), equalTo(
                 mkMap(mkEntry(partition1, new OffsetAndMetadata(2L, Optional.of(1), expectedMetadata3.encode())))
         ));
         task.postCommit(false);
@@ -1462,7 +1542,7 @@ public class StreamTaskTest {
 
         final IllegalStateException thrown = assertThrows(
             IllegalStateException.class,
-            task::prepareCommit
+            () -> task.prepareCommit(true)
         );
 
         assertThat(thrown.getMessage(), is("Illegal state CLOSED while preparing active task 0_0 for committing"));
@@ -1488,7 +1568,7 @@ public class StreamTaskTest {
         task.initializeIfNeeded();
         task.completeRestoration(noOpResetter -> { });
 
-        assertThat("task is not idling", !task.timeCurrentIdlingStarted().isPresent());
+        assertThat("task is not idling", task.timeCurrentIdlingStarted().isEmpty());
 
         assertFalse(task.process(0L));
 
@@ -1500,7 +1580,7 @@ public class StreamTaskTest {
         task.addRecords(partition2, singleton(getConsumerRecordWithOffsetAsTimestamp(partition2, 0)));
 
         assertTrue(task.process(0L));
-        assertThat("task is not idling", !task.timeCurrentIdlingStarted().isPresent());
+        assertThat("task is not idling", task.timeCurrentIdlingStarted().isEmpty());
     }
 
     @Test
@@ -1516,7 +1596,7 @@ public class StreamTaskTest {
 
         task.resume();
 
-        assertThat("task is not idling", !task.timeCurrentIdlingStarted().isPresent());
+        assertThat("task is not idling", task.timeCurrentIdlingStarted().isEmpty());
     }
 
     @Test
@@ -1756,10 +1836,10 @@ public class StreamTaskTest {
         task.initializeIfNeeded();
         task.completeRestoration(noOpResetter -> { }); // should checkpoint
 
-        task.prepareCommit();
+        task.prepareCommit(true);
         task.postCommit(true); // should checkpoint
 
-        task.prepareCommit();
+        task.prepareCommit(true);
         task.postCommit(false); // should not checkpoint
 
         assertThat("Map was empty", task.highWaterMark().size() == 2);
@@ -1783,10 +1863,10 @@ public class StreamTaskTest {
 
         task.initializeIfNeeded();
         task.completeRestoration(noOpResetter -> { }); // should checkpoint
-        task.prepareCommit();
+        task.prepareCommit(true);
         task.postCommit(true); // should checkpoint
 
-        task.prepareCommit();
+        task.prepareCommit(true);
         task.postCommit(false); // should checkpoint since the offset delta is greater than the threshold
 
         assertThat("Map was empty", task.highWaterMark().size() == 2);
@@ -1802,7 +1882,7 @@ public class StreamTaskTest {
 
         task.initializeIfNeeded();
         task.completeRestoration(noOpResetter -> { });
-        task.prepareCommit();
+        task.prepareCommit(true);
         task.postCommit(false);
         final File checkpointFile = new File(
             stateDirectory.getOrCreateDirectoryForTask(taskId),
@@ -1947,7 +2027,7 @@ public class StreamTaskTest {
         assertTrue(task.process(0L));
         assertTrue(task.process(0L));
 
-        task.prepareCommit();
+        task.prepareCommit(true);
         if (doCommit) {
             task.updateCommittedOffsets(repartition, 10L);
         }
@@ -1965,7 +2045,7 @@ public class StreamTaskTest {
     public void shouldThrowStreamsExceptionWhenFetchCommittedFailed() {
         when(stateManager.taskId()).thenReturn(taskId);
         when(stateManager.taskType()).thenReturn(TaskType.ACTIVE);
-        final Consumer<byte[], byte[]> consumer = new MockConsumer<byte[], byte[]>(AutoOffsetResetStrategy.EARLIEST.name()) {
+        final Consumer<byte[], byte[]> consumer = new MockConsumer<>(AutoOffsetResetStrategy.EARLIEST.name()) {
             @Override
             public Map<TopicPartition, OffsetAndMetadata> committed(final Set<TopicPartition> partitions) {
                 throw new KafkaException("KABOOM!");
@@ -1986,7 +2066,7 @@ public class StreamTaskTest {
 
         task.transitionTo(SUSPENDED);
         task.transitionTo(Task.State.CLOSED);
-        assertThrows(IllegalStateException.class, task::prepareCommit);
+        assertThrows(IllegalStateException.class, () -> task.prepareCommit(true));
     }
 
     @Test
@@ -2037,7 +2117,7 @@ public class StreamTaskTest {
         task.initializeIfNeeded();
         task.completeRestoration(noOpResetter -> { });
 
-        task.prepareCommit();
+        task.prepareCommit(true);
         task.postCommit(false);
 
         task.suspend();
@@ -2059,7 +2139,7 @@ public class StreamTaskTest {
         task.initializeIfNeeded();
         task.completeRestoration(noOpResetter -> { }); // should checkpoint
 
-        task.prepareCommit();
+        task.prepareCommit(true);
         task.postCommit(false); // should checkpoint since the offset delta is greater than the threshold
 
         task.suspend();
@@ -2143,7 +2223,7 @@ public class StreamTaskTest {
         task.initializeIfNeeded();
         task.completeRestoration(noOpResetter -> { }); // should flush and checkpoint
         task.suspend();
-        task.prepareCommit();
+        task.prepareCommit(true);
         task.postCommit(true); // should flush and checkpoint
         task.closeClean();
 
@@ -2213,7 +2293,7 @@ public class StreamTaskTest {
         assertTrue(task.commitNeeded());
 
         task.suspend();
-        task.prepareCommit();
+        task.prepareCommit(true);
         task.postCommit(false);
 
         assertEquals(SUSPENDED, task.state());
@@ -2243,7 +2323,7 @@ public class StreamTaskTest {
         assertTrue(task.commitNeeded());
 
         task.suspend();
-        task.prepareCommit();
+        task.prepareCommit(true);
         task.postCommit(true); // should checkpoint
         assertThrows(ProcessorStateException.class, () -> task.closeClean());
 
@@ -2272,7 +2352,7 @@ public class StreamTaskTest {
         task.addRecords(partition1, singletonList(getConsumerRecordWithOffsetAsTimestamp(partition1, offset)));
         task.process(100L);
 
-        assertThrows(ProcessorStateException.class, task::prepareCommit);
+        assertThrows(ProcessorStateException.class, () -> task.prepareCommit(true));
 
         assertEquals(RUNNING, task.state());
 
@@ -2305,7 +2385,7 @@ public class StreamTaskTest {
         assertTrue(task.commitNeeded());
 
         task.suspend();
-        task.prepareCommit();
+        task.prepareCommit(true);
         assertThrows(ProcessorStateException.class, () -> task.postCommit(true));
 
         assertEquals(Task.State.SUSPENDED, task.state());
@@ -2608,7 +2688,7 @@ public class StreamTaskTest {
         assertTrue(task.process(offset));
         assertTrue(task.commitNeeded());
         assertThat(
-            task.prepareCommit(),
+            task.prepareCommit(true),
             equalTo(mkMap(mkEntry(partition1,
                 new OffsetAndMetadata(offset + 1,
                     new TopicPartitionMetadata(RecordQueue.UNKNOWN, new ProcessorMetadata()).encode()))))
@@ -2640,7 +2720,7 @@ public class StreamTaskTest {
         assertTrue(task.process(offset));
         assertTrue(task.commitNeeded());
         assertThat(
-            task.prepareCommit(),
+            task.prepareCommit(true),
             equalTo(mkMap(mkEntry(partition1, new OffsetAndMetadata(offset + 1, new TopicPartitionMetadata(offset, new ProcessorMetadata()).encode()))))
         );
     }
@@ -2670,14 +2750,14 @@ public class StreamTaskTest {
         assertTrue(task.process(offset));
         assertTrue(task.commitNeeded());
         assertThat(
-            task.prepareCommit(),
+            task.prepareCommit(true),
             equalTo(mkMap(mkEntry(partition1, new OffsetAndMetadata(1, new TopicPartitionMetadata(0, new ProcessorMetadata()).encode()))))
         );
 
         assertTrue(task.process(offset));
         assertTrue(task.commitNeeded());
         assertThat(
-            task.prepareCommit(),
+            task.prepareCommit(true),
             equalTo(mkMap(mkEntry(partition1, new OffsetAndMetadata(2, new TopicPartitionMetadata(0, new ProcessorMetadata()).encode()))))
         );
     }
@@ -2707,7 +2787,7 @@ public class StreamTaskTest {
         assertTrue(task.process(offset));
         assertTrue(task.commitNeeded());
         assertThat(
-            task.prepareCommit(),
+            task.prepareCommit(true),
             equalTo(mkMap(mkEntry(partition1,
                 new OffsetAndMetadata(offset + 1,
                     new TopicPartitionMetadata(RecordQueue.UNKNOWN, new ProcessorMetadata()).encode()))))
@@ -2739,7 +2819,7 @@ public class StreamTaskTest {
         assertTrue(task.process(offset));
         assertTrue(task.commitNeeded());
         assertThat(
-            task.prepareCommit(),
+            task.prepareCommit(true),
             equalTo(mkMap(mkEntry(partition1, new OffsetAndMetadata(offset + 1, new TopicPartitionMetadata(offset, new ProcessorMetadata()).encode()))))
         );
     }
@@ -2770,14 +2850,14 @@ public class StreamTaskTest {
         assertTrue(task.process(offset));
         assertTrue(task.commitNeeded());
         assertThat(
-            task.prepareCommit(),
+            task.prepareCommit(true),
             equalTo(mkMap(mkEntry(partition1, new OffsetAndMetadata(1, new TopicPartitionMetadata(0, new ProcessorMetadata()).encode()))))
         );
 
         assertTrue(task.process(offset));
         assertTrue(task.commitNeeded());
         assertThat(
-            task.prepareCommit(),
+            task.prepareCommit(true),
             equalTo(mkMap(mkEntry(partition1, new OffsetAndMetadata(2, new TopicPartitionMetadata(0, new ProcessorMetadata()).encode()))))
         );
     }
@@ -3029,7 +3109,7 @@ public class StreamTaskTest {
             singletonList(stateStore),
             emptyMap());
 
-        final MockConsumer<byte[], byte[]> consumer = new MockConsumer<byte[], byte[]>(AutoOffsetResetStrategy.EARLIEST.name()) {
+        final MockConsumer<byte[], byte[]> consumer = new MockConsumer<>(AutoOffsetResetStrategy.EARLIEST.name()) {
             @Override
             public Map<TopicPartition, OffsetAndMetadata> committed(final Set<TopicPartition> partitions) {
                 throw new TimeoutException("KABOOM!");
@@ -3314,7 +3394,7 @@ public class StreamTaskTest {
     private ConsumerRecord<byte[], byte[]> getConsumerRecordWithOffsetAsTimestamp(final Integer key, final long offset) {
         return new ConsumerRecord<>(
             topic1,
-            1,
+            0,
             offset,
             offset, // use the offset as the timestamp
             TimestampType.CREATE_TIME,
@@ -3330,7 +3410,7 @@ public class StreamTaskTest {
     private ConsumerRecord<byte[], byte[]> getConsumerRecordWithInvalidTimestamp(final long offset) {
         return new ConsumerRecord<>(
             topic1,
-            1,
+            0,
             offset,
             -1L, // invalid (negative) timestamp
             TimestampType.CREATE_TIME,
@@ -3347,24 +3427,24 @@ public class StreamTaskTest {
                                                                                                  final long offset,
                                                                                                  final int leaderEpoch) {
         return new ConsumerRecord<>(
-                topicPartition.topic(),
-                topicPartition.partition(),
-                offset,
-                offset, // use the offset as the timestamp
-                TimestampType.CREATE_TIME,
-                0,
-                0,
-                recordKey,
-                recordValue,
-                new RecordHeaders(),
-                Optional.of(leaderEpoch)
+            topicPartition.topic(),
+            topicPartition.partition(),
+            offset,
+            offset, // use the offset as the timestamp
+            TimestampType.CREATE_TIME,
+            0,
+            0,
+            recordKey,
+            recordValue,
+            new RecordHeaders(),
+            Optional.of(leaderEpoch)
         );
     }
 
     private ConsumerRecord<byte[], byte[]> getCorruptedConsumerRecordWithOffsetAsTimestamp(final long offset) {
         return new ConsumerRecord<>(
             topic1,
-            1,
+            0,
             offset,
             offset, // use the offset as the timestamp
             TimestampType.CREATE_TIME,
